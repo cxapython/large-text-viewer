@@ -1,0 +1,37 @@
+# QBDI Trace v2.0 (enhanced for algorithm recovery)
+# Format: #seq [Ddepth] [type] address offset instruction ;reg_changes
+# Types: [A]=Arithmetic [L]=Logic [M]=Memory [B]=Branch [C]=Call [R]=Return
+#
+[hook] target=0x7dd046e244 argc=5
+====== ENTER 0x7dd046e244 (global) ======
+#1 [D1] [M] 0x0000007dd046e244	0x21244		ldr	x16, #0x8	;X16=0x0->0x7e8897c000
+  MEM_read @0x7dd046e24c size=8 val=00c097887e000000
+#2 [D1] [B] 0x0000007dd046e248	0x21248		br	x16
+#3 [D1] [A] 0x0000007e8b8df000	0x0		sub	sp, sp, #0x10	;SP=0x7ffc00010000->0x7ffc0000fff0
+#4 [D1] [M] 0x0000007e8b8df004	0x4		stp	x29, x30, [sp, #-0x20]!
+  MEM_write @0x7ffc0000ffd0 size=16 val=00100000fc7f000000200000fc7f0000
+    SRC_REG=X29 val=0x7ffc00001000
+#5 [D1] [L] 0x0000007e8b8df008	0x8		and	x8, x0, #0xff	;X8=0x0->0x41
+#6 [D1] [A] 0x0000007e8b8df00c	0xc		add	x9, x1, x2	;X9=0x0->0x1234
+#7 [D1] [C] 0x0000007e8b8df010	0x10		bl	#0x100	;X30=0x0->0x7e8b8df014
+====== ENTER 0x7e8b8df110 (sub_func) ======
+#8 [D2] [M] 0x0000007e8b8df110	0x110		str	x0, [sp, #-0x10]!
+  MEM_write @0x7ffc0000ffc0 size=8 val=4100000000000000
+    SRC_REG=X0 val=0x41
+#9 [D2] [A] 0x0000007e8b8df114	0x114		mul	x0, x0, x1	;X0=0x41->0x82
+#10 [D2] [L] 0x0000007e8b8df118	0x118		eor	x0, x0, #0x55	;X0=0x82->0xd7
+#11 [D2] [M] 0x0000007e8b8df11c	0x11c		ldr	x0, [sp], #0x10
+  MEM_read @0x7ffc0000ffc0 size=8 val=4100000000000000
+======  LEAVE 0x7e8b8df110 ======
+#12 [D2] [R] 0x0000007e8b8df120	0x120		ret
+#13 [D1] [M] 0x0000007e8b8df014	0x14		str	x0, [x19]
+  MEM_write @0xb400007dd0f0cf50 size=8 val=d700000000000000
+    SRC_REG=X0 val=0xd7
+#14 [D1] [L] 0x0000007e8b8df018	0x18		lsr	x8, x0, #4	;X8=0xd7->0xd
+#15 [D1] [A] 0x0000007e8b8df01c	0x1c		sub	x0, x8, #1	;X0=0xd7->0xc
+#16 [D1] [M] 0x0000007e8b8df020	0x20		ldp	x29, x30, [sp], #0x20
+  MEM_read @0x7ffc0000ffd0 size=16 val=00100000fc7f000000200000fc7f0000
+======  LEAVE 0x7dd046e244 ======
+#17 [D0] [R] 0x0000007e8b8df024	0x24		ret
+[gqb] vm.call ok=1, ret=0xc
+

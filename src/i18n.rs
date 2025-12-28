@@ -683,5 +683,153 @@ impl I18n {
             "Ctrl+S"
         }
     }
+
+    // ===== Trace 模式 =====
+    pub fn trace_mode(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Trace Mode",
+            Language::Chinese => "Trace 模式",
+        }
+    }
+
+    pub fn trace_mode_enabled(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Arm64Trace Mode",
+            Language::Chinese => "Arm64Trace 模式",
+        }
+    }
+
+    pub fn trace_detected(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Arm64Trace format detected",
+            Language::Chinese => "检测到 Arm64Trace 格式",
+        }
+    }
+
+    pub fn trace_filter_panel(&self) -> &'static str {
+        match self.lang {
+            Language::English => "🔍 Trace Filter",
+            Language::Chinese => "🔍 Trace 过滤器",
+        }
+    }
+
+    pub fn trace_instruction_type(&self) -> &'static str {
+        match self.lang {
+            Language::English => "📋 Instruction Type",
+            Language::Chinese => "📋 指令类型",
+        }
+    }
+
+    pub fn trace_call_depth(&self) -> &'static str {
+        match self.lang {
+            Language::English => "🏷️ Call Depth",
+            Language::Chinese => "🏷️ 调用深度",
+        }
+    }
+
+    pub fn trace_register_track(&self) -> &'static str {
+        match self.lang {
+            Language::English => "📝 Register Track",
+            Language::Chinese => "📝 寄存器追踪",
+        }
+    }
+
+    pub fn trace_seq_range(&self) -> &'static str {
+        match self.lang {
+            Language::English => "🔢 Sequence Range",
+            Language::Chinese => "🔢 序号范围",
+        }
+    }
+
+    pub fn trace_address_range(&self) -> &'static str {
+        match self.lang {
+            Language::English => "📍 Address Range",
+            Language::Chinese => "📍 地址范围",
+        }
+    }
+
+    pub fn trace_options(&self) -> &'static str {
+        match self.lang {
+            Language::English => "⚙️ Options",
+            Language::Chinese => "⚙️ 其他选项",
+        }
+    }
+
+    pub fn trace_memory_only(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Memory ops only",
+            Language::Chinese => "仅显示内存操作",
+        }
+    }
+
+    pub fn trace_reg_changes_only(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Reg changes only",
+            Language::Chinese => "仅显示寄存器变化",
+        }
+    }
+
+    pub fn trace_reset_filter(&self) -> &'static str {
+        match self.lang {
+            Language::English => "🔄 Reset Filter",
+            Language::Chinese => "🔄 重置过滤器",
+        }
+    }
+
+    pub fn trace_statistics(&self) -> &'static str {
+        match self.lang {
+            Language::English => "📊 Statistics",
+            Language::Chinese => "📊 统计信息",
+        }
+    }
+
+    pub fn trace_total_instructions(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Total",
+            Language::Chinese => "总指令",
+        }
+    }
+
+    pub fn trace_max_depth(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Max Depth",
+            Language::Chinese => "最大深度",
+        }
+    }
+
+    pub fn trace_goto_seq(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Go to Seq #",
+            Language::Chinese => "跳转到序号 #",
+        }
+    }
+
+    pub fn trace_goto_addr(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Go to Address",
+            Language::Chinese => "跳转到地址",
+        }
+    }
+
+    pub fn trace_show_filter(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Show Filter Panel",
+            Language::Chinese => "显示过滤器面板",
+        }
+    }
+
+    pub fn trace_show_stats(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Show Statistics",
+            Language::Chinese => "显示统计信息",
+        }
+    }
+
+    pub fn menu_trace_mode(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Trace Mode",
+            Language::Chinese => "Trace 模式",
+        }
+    }
 }
 

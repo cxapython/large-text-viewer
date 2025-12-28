@@ -14,6 +14,10 @@ use large_text_core::replacer::{ReplaceMessage, Replacer};
 use large_text_core::search_engine::{SearchEngine, SearchMessage, SearchResult, SearchType};
 
 use crate::i18n::{I18n, Language};
+use crate::trace_analyzer::TraceAnalyzer;
+use crate::trace_mode::{TraceModeState, render_filter_panel, render_stats_panel};
+use crate::plugin::{PluginManager, render_plugin_selector};
+use crate::trace_plugin::TraceAnalyzerPlugin;
 
 /// 搜索结果项，用于结果面板显示
 #[derive(Clone)]
@@ -104,6 +108,12 @@ pub struct TextViewerApp {
     open_start_time: Option<std::time::Instant>,
     search_count_start_time: Option<std::time::Instant>,
 
+    // Trace 模式
+    trace_mode: TraceModeState,
+
+    // 插件系统
+    plugin_manager: PluginManager,
+
     // 国际化
     i18n: I18n,
 }
@@ -171,6 +181,12 @@ impl Default for TextViewerApp {
             open_start_time: None,
             search_count_start_time: None,
             i18n: I18n::default(),
+            trace_mode: TraceModeState::default(),
+            plugin_manager: {
+                let mut pm = PluginManager::new();
+                pm.register(Box::new(TraceAnalyzerPlugin::new()));
+                pm
+            },
         }
     }
 }
@@ -194,12 +210,45 @@ impl TextViewerApp {
                 self.page_offsets.clear();
                 self.current_result_index = 0;
 
+                // 检测是否为 Arm64Trace 格式
+                self.detect_and_enable_trace_mode();
+
                 if self.tail_mode {
                     self.setup_file_watcher();
                 }
             }
             Err(e) => {
                 self.status_message = self.i18n.msg_error_opening(&e.to_string());
+            }
+        }
+    }
+
+    /// 检测并启用 Trace 模式
+    fn detect_and_enable_trace_mode(&mut self) {
+        if let Some(ref reader) = self.file_reader {
+            // 读取文件头部进行检测
+            let sample_size = 4096.min(reader.len());
+            let sample = reader.get_chunk(0, sample_size);
+            
+            if TraceAnalyzer::detect_trace_format(&sample) {
+                self.trace_mode.enabled = true;
+                self.trace_mode.show_filter_panel = true;
+                self.trace_mode.show_stats_panel = true;
+                
+                // 计算统计信息（采样）
+                let stats_sample_size = 100_000.min(reader.len());
+                let stats_sample = reader.get_chunk(0, stats_sample_size);
+                self.trace_mode.statistics = Some(
+                    self.trace_mode.analyzer.compute_statistics(&stats_sample, 1000)
+                );
+                
+                self.status_message = format!(
+                    "{} - {}",
+                    self.status_message,
+                    self.i18n.trace_detected()
+                );
+            } else {
+                self.trace_mode.enabled = false;
             }
         }
     }
@@ -894,6 +943,22 @@ impl TextViewerApp {
                             self.file_change_rx = None;
                         }
                     }
+                    
+                    ui.separator();
+                    
+                    // Trace 模式
+                    ui.label(egui::RichText::new(self.i18n.menu_trace_mode()).strong());
+                    
+                    if ui.checkbox(&mut self.trace_mode.enabled, self.i18n.trace_mode_enabled()).changed() {
+                        if self.trace_mode.enabled {
+                            self.detect_and_enable_trace_mode();
+                        }
+                    }
+                    
+                    if self.trace_mode.enabled {
+                        ui.checkbox(&mut self.trace_mode.show_filter_panel, self.i18n.trace_show_filter());
+                        ui.checkbox(&mut self.trace_mode.show_stats_panel, self.i18n.trace_show_stats());
+                    }
                 });
 
                 ui.menu_button(self.i18n.menu_language(), |ui| {
@@ -1557,6 +1622,14 @@ impl TextViewerApp {
                                     }
 
                                     ui.add(egui::Label::new(job).extend())
+                                } else if self.plugin_manager.has_active_plugin() {
+                                    // 插件模式：使用插件渲染
+                                    self.plugin_manager.render_line(ui, line_text);
+                                    ui.label("") // 占位符
+                                } else if self.trace_mode.enabled {
+                                    // Trace 模式（兼容）：使用语法高亮
+                                    self.trace_mode.render_highlighted_line(ui, line_text, self.font_size);
+                                    ui.label("") // 占位符，保持返回值类型一致
                                 } else {
                                     let text = egui::RichText::new(line_text)
                                         .monospace()
@@ -1663,6 +1736,60 @@ impl TextViewerApp {
                     });
             }
         }
+    }
+
+    /// 渲染插件面板
+    fn render_plugin_panel(&mut self, ctx: &egui::Context) {
+        // 优先使用新插件系统
+        if self.plugin_manager.has_active_plugin() && self.plugin_manager.show_plugin_panel {
+            self.plugin_manager.update_context(self.i18n.lang, self.font_size, self.dark_mode);
+            
+            egui::SidePanel::left("plugin_panel")
+                .resizable(true)
+                .default_width(self.plugin_manager.panel_width)
+                .min_width(200.0)
+                .max_width(450.0)
+                .frame(egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(28, 30, 35))
+                    .inner_margin(egui::Margin::symmetric(8.0, 12.0)))
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.plugin_manager.render_side_panel(ui);
+                        });
+                });
+            return;
+        }
+        
+        // 兼容旧的 trace_mode
+        if !self.trace_mode.enabled || !self.trace_mode.show_filter_panel {
+            return;
+        }
+
+        egui::SidePanel::left("trace_filter_panel")
+            .resizable(true)
+            .default_width(self.trace_mode.filter_panel_width)
+            .min_width(200.0)
+            .max_width(400.0)
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(28, 30, 35))
+                .inner_margin(0.0))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // 渲染过滤器面板
+                        render_filter_panel(ui, &mut self.trace_mode, self.i18n.lang);
+                        
+                        ui.add_space(16.0);
+                        
+                        // 渲染统计面板
+                        if self.trace_mode.show_stats_panel {
+                            render_stats_panel(ui, &self.trace_mode, self.i18n.lang);
+                        }
+                    });
+            });
     }
 }
 
@@ -1772,6 +1899,7 @@ impl eframe::App for TextViewerApp {
         self.render_toolbar(ctx);
         self.render_status_bar(ctx);
         self.render_results_panel(ctx);
+        self.render_plugin_panel(ctx);
         self.render_text_area(ctx);
         self.render_encoding_selector(ctx);
         self.render_file_info(ctx);

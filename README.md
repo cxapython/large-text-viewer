@@ -53,6 +53,49 @@
    | Shift+F3 | 上一个结果 |
    | Escape | 关闭搜索栏 |
 
+### 🔌 插件系统 (v0.2.0 新增)
+
+应用现在支持可扩展的插件架构，允许添加自定义文件类型处理器：
+
+#### 内置插件：ARM64 Trace 分析器
+
+专为逆向工程设计的 QBDI Trace 文件分析插件：
+
+- **🎨 语法高亮**：
+  - 指令类型颜色区分（算术、逻辑、内存、分支、调用、返回）
+  - 寄存器名称高亮
+  - 地址和十六进制值着色
+  - 函数入口/出口标记
+
+- **📊 统计面板**：
+  - 总指令数统计
+  - 最大调用深度
+  - 内存读写次数
+  - 指令类型分布百分比
+
+- **🔍 过滤器**：
+  - 按指令类型过滤（[A] [L] [M] [B] [C] [R]）
+  - 按调用深度过滤
+  - 按寄存器追踪（X0, X1, SP, LR 等）
+  - 按序号范围过滤
+
+- **自动检测**：打开 QBDI Trace 文件时自动启用
+
+#### 开发自定义插件
+
+实现 `Plugin` trait 即可创建新插件：
+
+```rust
+pub trait Plugin: Send {
+    fn info(&self) -> &PluginInfo;
+    fn can_handle(&self, content_sample: &str) -> bool;
+    fn on_activate(&mut self, content_sample: &str);
+    fn render_side_panel(&mut self, ui: &mut egui::Ui, ctx: &PluginContext);
+    fn render_line(&mut self, ui: &mut egui::Ui, line: &str, ctx: &PluginContext);
+    // ...
+}
+```
+
 ## 性能目标
 
 1. **即时访问**：即时打开 >4GB 的文件（<100ms），无需将全部内容加载到 RAM
@@ -153,11 +196,17 @@ cargo run --release
 - 点击菜单栏的 **语言**
 - 选择 **中文** 或 **English**
 
+### 7. 使用插件（ARM64 Trace 分析器）
+
+- 打开 QBDI Trace 格式的文件，插件将自动激活
+- 左侧面板显示统计信息和过滤器
+- 可通过 **视图 > Trace 模式** 手动启用/禁用
+
 ## 架构设计
 
 ### 高层组件
 
-系统分为两个主要层：
+系统分为三个主要层：
 
 1. **核心层 (`large-text-core`)**：
    - **`FileReader`**：使用 `memmap2` crate 管理内存映射文件访问，处理编码检测和解码
@@ -165,7 +214,12 @@ cargo run --release
    - **`SearchEngine`**：基于 ripgrep 底层库（`grep-regex`、`grep-searcher`、`memchr`）的高性能搜索引擎，支持 SIMD 加速和智能搜索策略
    - **`Replacer`**：处理文件修改，通过写时复制机制确保数据完整性
 
-2. **UI 层 (`large-text-viewer`)**：
+2. **插件层**：
+   - **`Plugin` trait**：定义插件接口
+   - **`PluginManager`**：管理插件的注册、激活和生命周期
+   - **`TraceAnalyzerPlugin`**：ARM64 Trace 分析插件实现
+
+3. **UI 层 (`large-text-viewer`)**：
    - 使用 `egui` 构建，这是 Rust 的即时模式 GUI 库
    - **`TextViewerApp`**：主应用程序状态管理器，处理用户输入、管理视口（虚拟滚动）并通过通道协调异步任务
 
@@ -176,6 +230,8 @@ cargo run --release
 - **搜索**：UI 向 `SearchEngine` 发送查询，后者生成线程。结果通过 `mpsc` 通道流式返回 UI，允许 UI 实时更新进度条和高亮匹配项，而不阻塞渲染循环
 
 - **渲染**：UI 仅请求当前视口中可见的行。`LineIndexer` 计算字节范围，`FileReader` 仅从内存映射解码那些特定字节
+
+- **插件渲染**：激活的插件接管行内容渲染，提供语法高亮和专业的可视化效果
 
 ## 生成测试文件
 
@@ -203,4 +259,3 @@ MIT License
 - [GitHub 仓库](https://github.com/acejarvis/large-text-viewer)
 - [Crates.io - large-text-viewer](https://crates.io/crates/large-text-viewer)
 - [Crates.io - large-text-core](https://crates.io/crates/large-text-core)
-

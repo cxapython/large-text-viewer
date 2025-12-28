@@ -1,5 +1,10 @@
 mod app;
 mod i18n;
+mod plugin;
+mod plugins;
+mod trace_plugin;
+mod trace_analyzer;
+mod trace_mode;
 
 use app::TextViewerApp;
 use eframe::egui;
