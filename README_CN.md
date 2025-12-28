@@ -24,7 +24,10 @@
 
 3. **虚拟滚动**：仅渲染当前视口中可见的行，确保恒定的渲染性能
 
-4. **异步并行搜索**：
+4. **高性能搜索引擎**（基于 ripgrep 底层技术）：
+   - 使用 `grep-regex`、`grep-searcher` 等 ripgrep 核心库
+   - 对于纯文本搜索使用 `memchr` SIMD 加速，性能提升 5-10 倍
+   - 智能字面量提取优化，自动选择最优搜索策略
    - 支持区分大小写和正则表达式查询
    - "查找全部"操作在后台线程运行，不阻塞 UI
    - 实时进度报告和结果流式传输
@@ -159,7 +162,7 @@ cargo run --release
 1. **核心层 (`large-text-core`)**：
    - **`FileReader`**：使用 `memmap2` crate 管理内存映射文件访问，处理编码检测和解码
    - **`LineIndexer`**：负责将行号映射到字节偏移量，实现混合索引策略以平衡内存使用和访问速度
-   - **`SearchEngine`**：并行化搜索模块，按块扫描内存映射文件
+   - **`SearchEngine`**：基于 ripgrep 底层库（`grep-regex`、`grep-searcher`、`memchr`）的高性能搜索引擎，支持 SIMD 加速和智能搜索策略
    - **`Replacer`**：处理文件修改，通过写时复制机制确保数据完整性
 
 2. **UI 层 (`large-text-viewer`)**：
