@@ -13,6 +13,8 @@ use large_text_core::line_indexer::LineIndexer;
 use large_text_core::replacer::{ReplaceMessage, Replacer};
 use large_text_core::search_engine::{SearchEngine, SearchMessage, SearchResult, SearchType};
 
+use crate::i18n::{I18n, Language};
+
 pub struct TextViewerApp {
     file_reader: Option<Arc<FileReader>>,
     line_indexer: LineIndexer,
@@ -88,6 +90,9 @@ pub struct TextViewerApp {
     // Performance measurement
     open_start_time: Option<std::time::Instant>,
     search_count_start_time: Option<std::time::Instant>,
+
+    // 国际化 / Internationalization
+    i18n: I18n,
 }
 
 #[derive(Clone)]
@@ -149,6 +154,7 @@ impl Default for TextViewerApp {
             pending_replacements: Vec::new(),
             open_start_time: None,
             search_count_start_time: None,
+            i18n: I18n::default(), // 默认中文
         }
     }
 }
@@ -163,7 +169,7 @@ impl TextViewerApp {
                     .index_file(self.file_reader.as_ref().unwrap());
                 self.scroll_line = 0;
                 self.scroll_to_row = Some(0); // Reset scroll to top for new file
-                self.status_message = format!("Opened: {}", path.display());
+                self.status_message = self.i18n.msg_opened(&path.display().to_string());
                 self.search_engine.clear();
                 self.search_results.clear();
                 self.total_search_results = 0;
@@ -177,7 +183,7 @@ impl TextViewerApp {
                 }
             }
             Err(e) => {
-                self.status_message = format!("Error opening file: {}", e);
+                self.status_message = self.i18n.msg_error_opening(&e.to_string());
             }
         }
     }
@@ -234,17 +240,17 @@ impl TextViewerApp {
         self.search_engine.clear();
 
         if self.search_in_progress {
-            self.status_message = "Search already running...".to_string();
+            self.status_message = self.i18n.msg_search_running().to_string();
             return;
         }
 
         let Some(ref reader) = self.file_reader else {
-            self.status_message = "Open a file before searching".to_string();
+            self.status_message = self.i18n.msg_open_file_first().to_string();
             return;
         };
 
         if self.search_query.is_empty() {
-            self.status_message = "Enter a search query first".to_string();
+            self.status_message = self.i18n.msg_enter_query().to_string();
             return;
         }
 
@@ -269,9 +275,9 @@ impl TextViewerApp {
         self.search_cancellation_token = Some(cancel_token.clone());
 
         self.status_message = if find_all {
-            "Searching all matches...".to_string()
+            self.i18n.msg_searching_all().to_string()
         } else {
-            "Searching first match...".to_string()
+            self.i18n.msg_searching_first().to_string()
         };
 
         if find_all {
@@ -336,7 +342,7 @@ impl TextViewerApp {
                         self.total_search_results += count;
                         if self.search_find_all {
                             self.status_message =
-                                format!("Found {} matches...", self.total_search_results);
+                                self.i18n.msg_found_matches(self.total_search_results);
                         }
                     }
                     SearchMessage::ChunkResult(chunk_result) => {
@@ -352,8 +358,9 @@ impl TextViewerApp {
                                     let elapsed = start_time.elapsed();
                                     println!("Search count completed in: {:.2?}", elapsed);
                                     self.status_message = format!(
-                                        "{} (Counted in {:.2?})",
-                                        self.status_message, elapsed
+                                        "{} {}",
+                                        self.status_message,
+                                        self.i18n.msg_counted_in(&format!("{:.2?}", elapsed))
                                     );
                                     self.search_count_start_time = None;
                                 }
@@ -374,7 +381,7 @@ impl TextViewerApp {
                         self.search_in_progress = false;
                         self.search_message_rx = None;
                         self.search_error = Some(e.clone());
-                        self.status_message = format!("Search failed: {}", e);
+                        self.status_message = self.i18n.msg_search_failed(&e);
                         return; // Stop processing messages
                     }
                 }
@@ -405,10 +412,9 @@ impl TextViewerApp {
                 let total = self.total_search_results;
                 if total > 0 {
                     if self.search_find_all {
-                        self.status_message = format!("Found {} matches", total);
+                        self.status_message = self.i18n.msg_found_total(total);
                     } else {
-                        self.status_message =
-                            "Showing first match. Run Find All to see every result.".to_string();
+                        self.status_message = self.i18n.msg_first_match_hint().to_string();
                     }
 
                     // Ensure we scroll to the first result if we haven't yet
@@ -420,7 +426,7 @@ impl TextViewerApp {
                         self.scroll_to_row = Some(target_line);
                     }
                 } else {
-                    self.status_message = "No matches found".to_string();
+                    self.status_message = self.i18n.msg_no_matches().to_string();
                 }
             }
 
@@ -456,17 +462,17 @@ impl TextViewerApp {
                     ReplaceMessage::Progress(processed, total) => {
                         let progress = processed as f32 / total as f32;
                         self.replace_progress = Some(progress);
-                        self.replace_status_message =
-                            Some(format!("Replacing... {:.1}%", progress * 100.0));
+                        self.replace_status_message = Some(self.i18n.msg_replacing(progress));
                     }
                     ReplaceMessage::Done => {
-                        self.replace_status_message = Some("Replacement complete.".to_string());
-                        self.status_message = "Replacement complete.".to_string();
+                        self.replace_status_message =
+                            Some(self.i18n.msg_replace_complete().to_string());
+                        self.status_message = self.i18n.msg_replace_complete().to_string();
                         done = true;
                     }
                     ReplaceMessage::Error(e) => {
-                        self.replace_status_message = Some(format!("Replace failed: {}", e));
-                        self.status_message = format!("Replace failed: {}", e);
+                        self.replace_status_message = Some(self.i18n.msg_replace_failed(&e));
+                        self.status_message = self.i18n.msg_replace_failed(&e);
                         done = true;
                     }
                 }
@@ -505,7 +511,7 @@ impl TextViewerApp {
             new_text: self.replace_query.clone(),
         });
         self.unsaved_changes = true;
-        self.status_message = "Replacement pending. Save to apply changes.".to_string();
+        self.status_message = self.i18n.msg_pending_save().to_string();
     }
 
     fn save_file(&mut self) {
@@ -533,7 +539,7 @@ impl TextViewerApp {
                         replacement.old_len,
                         &replacement.new_text,
                     ) {
-                        self.status_message = format!("Error saving: {}", e);
+                        self.status_message = self.i18n.msg_error_saving(&e.to_string());
                         success = false;
                         break;
                     }
@@ -542,7 +548,7 @@ impl TextViewerApp {
                 if success {
                     self.pending_replacements.clear();
                     self.unsaved_changes = false;
-                    self.status_message = "File saved successfully".to_string();
+                    self.status_message = self.i18n.msg_saved().to_string();
                 }
 
                 // Re-open file
@@ -554,7 +560,7 @@ impl TextViewerApp {
                         self.perform_search(self.search_find_all);
                     }
                     Err(e) => {
-                        self.status_message = format!("Error re-opening file: {}", e);
+                        self.status_message = self.i18n.msg_error_reopening(&e.to_string());
                     }
                 }
             } else {
@@ -569,7 +575,7 @@ impl TextViewerApp {
                             replacement.old_len,
                             &replacement.new_text,
                         ) {
-                            self.status_message = format!("Error saving: {}", e);
+                            self.status_message = self.i18n.msg_error_saving(&e.to_string());
                             success = false;
                             break;
                         }
@@ -577,11 +583,11 @@ impl TextViewerApp {
                     if success {
                         self.pending_replacements.clear();
                         self.unsaved_changes = false;
-                        self.status_message = "File saved successfully".to_string();
+                        self.status_message = self.i18n.msg_saved().to_string();
                         self.open_file(output_path);
                     }
                 } else {
-                    self.status_message = "Error copying file for save".to_string();
+                    self.status_message = self.i18n.msg_error_copy().to_string();
                 }
             }
         }
@@ -704,7 +710,7 @@ impl TextViewerApp {
         } else {
             // Need to fetch previous page (or last page if wrapping)
             if prev_index == self.total_search_results - 1 {
-                self.status_message = "Cannot wrap to end in paginated mode yet.".to_string();
+                self.status_message = self.i18n.msg_cannot_wrap().to_string();
             } else {
                 // Fetch previous page
                 // We need the start offset of the page containing `prev_index`.
@@ -758,11 +764,7 @@ impl TextViewerApp {
         let cancel_token = Arc::new(AtomicBool::new(false));
         self.search_cancellation_token = Some(cancel_token.clone());
 
-        self.status_message = format!(
-            "Loading results {}...{}",
-            start_index + 1,
-            start_index + 1000
-        );
+        self.status_message = self.i18n.msg_loading_results(start_index, start_index + 1000);
 
         std::thread::spawn(move || {
             let mut engine = SearchEngine::new();
@@ -779,20 +781,20 @@ impl TextViewerApp {
                 self.scroll_line = target_line.saturating_sub(3);
                 self.scroll_to_row = Some(target_line);
                 self.pending_scroll_target = Some(target_line);
-                self.status_message = format!("Jumped to line {}", line_num);
+                self.status_message = self.i18n.msg_jumped_to_line(line_num);
             } else {
-                self.status_message = "Line number out of range".to_string();
+                self.status_message = self.i18n.msg_line_out_of_range().to_string();
             }
         } else {
-            self.status_message = "Invalid line number".to_string();
+            self.status_message = self.i18n.msg_invalid_line().to_string();
         }
     }
 
     fn render_menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Open...").clicked() {
+                ui.menu_button(self.i18n.menu_file(), |ui| {
+                    if ui.button(self.i18n.menu_open()).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             // Auto-detect encoding
                             if let Ok(mut file) = std::fs::File::open(&path) {
@@ -807,44 +809,44 @@ impl TextViewerApp {
                     }
 
                     if ui
-                        .add_enabled(self.unsaved_changes, egui::Button::new("Save (Ctrl+S)"))
+                        .add_enabled(self.unsaved_changes, egui::Button::new(self.i18n.menu_save()))
                         .clicked()
                     {
                         self.save_file();
                         ui.close_menu();
                     }
 
-                    if ui.button("File Info").clicked() {
+                    if ui.button(self.i18n.menu_file_info()).clicked() {
                         self.show_file_info = !self.show_file_info;
                         ui.close_menu();
                     }
 
-                    if ui.button("Exit").clicked() {
+                    if ui.button(self.i18n.menu_exit()).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
-                ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.wrap_mode, "Word Wrap");
-                    ui.checkbox(&mut self.show_line_numbers, "Line Numbers");
-                    ui.checkbox(&mut self.dark_mode, "Dark Mode");
+                ui.menu_button(self.i18n.menu_view(), |ui| {
+                    ui.checkbox(&mut self.wrap_mode, self.i18n.menu_word_wrap());
+                    ui.checkbox(&mut self.show_line_numbers, self.i18n.menu_line_numbers());
+                    ui.checkbox(&mut self.dark_mode, self.i18n.menu_dark_mode());
 
                     ui.separator();
 
-                    ui.label("Font Size:");
+                    ui.label(self.i18n.menu_font_size());
                     ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0));
 
                     ui.separator();
 
-                    if ui.button("Select Encoding").clicked() {
+                    if ui.button(self.i18n.menu_select_encoding()).clicked() {
                         self.show_encoding_selector = true;
                         ui.close_menu();
                     }
                 });
 
-                ui.menu_button("Search", |ui| {
+                ui.menu_button(self.i18n.menu_search(), |ui| {
                     if ui
-                        .add(egui::Button::new("Find").shortcut_text("Ctrl+F"))
+                        .add(egui::Button::new(self.i18n.menu_find()).shortcut_text("Ctrl+F"))
                         .clicked()
                     {
                         self.show_search_bar = true;
@@ -852,7 +854,7 @@ impl TextViewerApp {
                         ui.close_menu();
                     }
                     if ui
-                        .add(egui::Button::new("Replace").shortcut_text("Ctrl+R"))
+                        .add(egui::Button::new(self.i18n.menu_replace()).shortcut_text("Ctrl+R"))
                         .clicked()
                     {
                         self.show_search_bar = true;
@@ -860,13 +862,13 @@ impl TextViewerApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    ui.checkbox(&mut self.use_regex, "Use Regex");
-                    ui.checkbox(&mut self.case_sensitive, "Match Case");
+                    ui.checkbox(&mut self.use_regex, self.i18n.menu_use_regex());
+                    ui.checkbox(&mut self.case_sensitive, self.i18n.menu_match_case());
                 });
 
-                ui.menu_button("Tools", |ui| {
+                ui.menu_button(self.i18n.menu_tools(), |ui| {
                     if ui
-                        .checkbox(&mut self.tail_mode, "Tail Mode (Auto-refresh)")
+                        .checkbox(&mut self.tail_mode, self.i18n.menu_tail_mode())
                         .changed()
                     {
                         if self.tail_mode {
@@ -874,6 +876,19 @@ impl TextViewerApp {
                         } else {
                             self.watcher = None;
                             self.file_change_rx = None;
+                        }
+                    }
+                });
+
+                // 语言切换菜单
+                ui.menu_button(self.i18n.menu_language(), |ui| {
+                    for lang in Language::all() {
+                        if ui
+                            .selectable_label(self.i18n.lang == *lang, lang.name())
+                            .clicked()
+                        {
+                            self.i18n.set_language(*lang);
+                            ui.close_menu();
                         }
                     }
                 });
@@ -887,7 +902,7 @@ impl TextViewerApp {
         }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Search:");
+                ui.label(self.i18n.toolbar_search());
                 let response =
                     ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(300.0));
 
@@ -897,45 +912,51 @@ impl TextViewerApp {
                 }
 
                 ui.checkbox(&mut self.case_sensitive, "Aa")
-                    .on_hover_text("Match Case");
+                    .on_hover_text(self.i18n.toolbar_match_case());
                 ui.checkbox(&mut self.use_regex, ".*")
-                    .on_hover_text("Use Regex");
+                    .on_hover_text(self.i18n.toolbar_use_regex());
 
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.perform_search(false);
                 }
 
                 if ui
-                    .add_enabled(!self.search_in_progress, egui::Button::new("🔍 Find"))
+                    .add_enabled(
+                        !self.search_in_progress,
+                        egui::Button::new(self.i18n.toolbar_find()),
+                    )
                     .clicked()
                 {
                     self.perform_search(false);
                 }
 
                 if ui
-                    .add_enabled(!self.search_in_progress, egui::Button::new("🔎 Find All"))
+                    .add_enabled(
+                        !self.search_in_progress,
+                        egui::Button::new(self.i18n.toolbar_find_all()),
+                    )
                     .clicked()
                 {
                     self.perform_search(true);
                 }
 
-                if ui.button("⬆ Previous").clicked() {
+                if ui.button(self.i18n.toolbar_previous()).clicked() {
                     self.go_to_previous_result();
                 }
 
-                if ui.button("⬇ Next").clicked() {
+                if ui.button(self.i18n.toolbar_next()).clicked() {
                     self.go_to_next_result();
                 }
 
                 if self.search_in_progress {
                     ui.add(egui::Spinner::new().size(18.0));
-                    ui.label("Searching...");
-                    if ui.button("Stop").clicked() {
+                    ui.label(self.i18n.toolbar_searching());
+                    if ui.button(self.i18n.toolbar_stop()).clicked() {
                         if let Some(token) = &self.search_cancellation_token {
                             token.store(true, Ordering::Relaxed);
                         }
                         self.search_in_progress = false;
-                        self.status_message = "Search stopped by user".to_string();
+                        self.status_message = self.i18n.msg_search_stopped().to_string();
                     }
                 }
 
@@ -948,7 +969,7 @@ impl TextViewerApp {
 
                 ui.separator();
 
-                ui.label("Go to line:");
+                ui.label(self.i18n.toolbar_goto_line());
                 let response = ui
                     .add(egui::TextEdit::singleline(&mut self.goto_line_input).desired_width(80.0));
 
@@ -956,7 +977,7 @@ impl TextViewerApp {
                     self.go_to_line();
                 }
 
-                if ui.button("Go").clicked() {
+                if ui.button(self.i18n.toolbar_go()).clicked() {
                     self.go_to_line();
                 }
             });
@@ -964,15 +985,15 @@ impl TextViewerApp {
             if self.show_replace {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Replace with:");
+                    ui.label(self.i18n.toolbar_replace_with());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.replace_query)
                             .desired_width(200.0)
-                            .hint_text("Replacement text..."),
+                            .hint_text(self.i18n.toolbar_replacement_text()),
                     );
 
                     if self.replace_in_progress {
-                        if ui.button("Stop Replace").clicked() {
+                        if ui.button(self.i18n.toolbar_stop_replace()).clicked() {
                             if let Some(token) = &self.replace_cancellation_token {
                                 token.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
@@ -982,10 +1003,10 @@ impl TextViewerApp {
                             ui.label(format!("{:.1}%", progress * 100.0));
                         }
                     } else {
-                        if ui.button("Replace").clicked() {
+                        if ui.button(self.i18n.toolbar_replace()).clicked() {
                             self.perform_single_replace();
                         }
-                        if ui.button("Replace All").clicked() {
+                        if ui.button(self.i18n.toolbar_replace_all()).clicked() {
                             self.perform_replace();
                         }
                     }
@@ -997,7 +1018,10 @@ impl TextViewerApp {
             }
 
             if let Some(ref error) = self.search_error {
-                ui.colored_label(egui::Color32::RED, format!("Search error: {}", error));
+                ui.colored_label(
+                    egui::Color32::RED,
+                    format!("{} {}", self.i18n.search_error_prefix(), error),
+                );
             }
         });
     }
@@ -1006,17 +1030,30 @@ impl TextViewerApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(ref reader) = self.file_reader {
-                    ui.label(format!("File: {}", reader.path().display()));
+                    ui.label(format!("{} {}", self.i18n.status_file(), reader.path().display()));
                     ui.separator();
-                    ui.label(format!("Size: {} bytes", reader.len()));
+                    ui.label(format!(
+                        "{} {} {}",
+                        self.i18n.status_size(),
+                        reader.len(),
+                        self.i18n.status_bytes()
+                    ));
                     ui.separator();
-                    ui.label(format!("Lines: ~{}", self.line_indexer.total_lines()));
+                    ui.label(format!(
+                        "{} ~{}",
+                        self.i18n.status_lines(),
+                        self.line_indexer.total_lines()
+                    ));
                     ui.separator();
-                    ui.label(format!("Encoding: {}", reader.encoding().name()));
+                    ui.label(format!(
+                        "{} {}",
+                        self.i18n.status_encoding(),
+                        reader.encoding().name()
+                    ));
                     ui.separator();
-                    ui.label(format!("Line: {}", self.scroll_line + 1));
+                    ui.label(format!("{} {}", self.i18n.status_line(), self.scroll_line + 1));
                 } else {
-                    ui.label("No file opened - Click File → Open to start");
+                    ui.label(self.i18n.status_no_file());
                 }
 
                 if !self.status_message.is_empty() {
@@ -1327,8 +1364,8 @@ impl TextViewerApp {
                 }
             } else {
                 ui.centered_and_justified(|ui| {
-                    ui.heading("Large Text Viewer");
-                    ui.label("\nClick File → Open to load a text file");
+                    ui.heading(self.i18n.main_title());
+                    ui.label(self.i18n.main_hint());
                 });
             }
         });
@@ -1336,7 +1373,7 @@ impl TextViewerApp {
 
     fn render_encoding_selector(&mut self, ctx: &egui::Context) {
         if self.show_encoding_selector {
-            egui::Window::new("Select Encoding")
+            egui::Window::new(self.i18n.dialog_select_encoding())
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
@@ -1357,7 +1394,7 @@ impl TextViewerApp {
                         }
                     }
 
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(self.i18n.dialog_cancel()).clicked() {
                         self.show_encoding_selector = false;
                     }
                 });
@@ -1367,20 +1404,34 @@ impl TextViewerApp {
     fn render_file_info(&mut self, ctx: &egui::Context) {
         if self.show_file_info {
             if let Some(ref reader) = self.file_reader {
-                egui::Window::new("File Information")
+                egui::Window::new(self.i18n.dialog_file_info())
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
-                        ui.label(format!("Path: {}", reader.path().display()));
                         ui.label(format!(
-                            "Size: {} bytes ({:.2} MB)",
+                            "{} {}",
+                            self.i18n.dialog_path(),
+                            reader.path().display()
+                        ));
+                        ui.label(format!(
+                            "{} {} {} ({:.2} MB)",
+                            self.i18n.status_size(),
                             reader.len(),
+                            self.i18n.status_bytes(),
                             reader.len() as f64 / 1_000_000.0
                         ));
-                        ui.label(format!("Lines: ~{}", self.line_indexer.total_lines()));
-                        ui.label(format!("Encoding: {}", reader.encoding().name()));
+                        ui.label(format!(
+                            "{} ~{}",
+                            self.i18n.status_lines(),
+                            self.line_indexer.total_lines()
+                        ));
+                        ui.label(format!(
+                            "{} {}",
+                            self.i18n.status_encoding(),
+                            reader.encoding().name()
+                        ));
 
-                        if ui.button("Close").clicked() {
+                        if ui.button(self.i18n.dialog_close()).clicked() {
                             self.show_file_info = false;
                         }
                     });
@@ -1394,15 +1445,19 @@ impl eframe::App for TextViewerApp {
         if let Some(start_time) = self.open_start_time {
             let elapsed = start_time.elapsed();
             println!("File opened and first frame rendered in: {:.2?}", elapsed);
-            self.status_message = format!("{} (Rendered in {:.2?})", self.status_message, elapsed);
+            self.status_message = format!(
+                "{} {}",
+                self.status_message,
+                self.i18n.msg_rendered_in(&format!("{:.2?}", elapsed))
+            );
             self.open_start_time = None;
         }
 
         // Update window title
         let title = if self.unsaved_changes {
-            "Large Text Viewer *"
+            self.i18n.window_title_unsaved()
         } else {
-            "Large Text Viewer"
+            self.i18n.window_title()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_string()));
 
