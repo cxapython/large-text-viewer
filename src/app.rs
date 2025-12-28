@@ -1041,41 +1041,63 @@ impl TextViewerApp {
     }
 
     fn render_status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(ref reader) = self.file_reader {
-                    ui.label(format!("{} {}", self.i18n.status_file(), reader.path().display()));
-                    ui.separator();
-                    ui.label(format!(
-                        "{} {} {}",
-                        self.i18n.status_size(),
-                        reader.len(),
-                        self.i18n.status_bytes()
-                    ));
-                    ui.separator();
-                    ui.label(format!(
-                        "{} ~{}",
-                        self.i18n.status_lines(),
-                        self.line_indexer.total_lines()
-                    ));
-                    ui.separator();
-                    ui.label(format!(
-                        "{} {}",
-                        self.i18n.status_encoding(),
-                        reader.encoding().name()
-                    ));
-                    ui.separator();
-                    ui.label(format!("{} {}", self.i18n.status_line(), self.scroll_line + 1));
-                } else {
-                    ui.label(self.i18n.status_no_file());
-                }
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(0, 122, 204))  // 蓝色状态栏
+                .inner_margin(egui::Margin::symmetric(8.0, 4.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(ref reader) = self.file_reader {
+                        // 位置百分比
+                        let total_lines = self.line_indexer.total_lines();
+                        let position_pct = if total_lines > 0 {
+                            (self.scroll_line as f32 / total_lines as f32 * 100.0).min(100.0)
+                        } else {
+                            0.0
+                        };
+                        ui.label(egui::RichText::new(format!("{:.0}%", position_pct))
+                            .color(egui::Color32::WHITE)
+                            .strong());
+                        ui.separator();
+                        
+                        ui.label(egui::RichText::new(format!("{} {}", self.i18n.status_line(), self.scroll_line + 1))
+                            .color(egui::Color32::WHITE));
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!(
+                            "{} ~{}",
+                            self.i18n.status_lines(),
+                            total_lines
+                        )).color(egui::Color32::WHITE));
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!(
+                            "{} {}",
+                            self.i18n.status_encoding(),
+                            reader.encoding().name()
+                        )).color(egui::Color32::WHITE));
+                        ui.separator();
+                        
+                        // 文件大小格式化
+                        let size = reader.len();
+                        let size_str = if size >= 1_000_000_000 {
+                            format!("{:.2} GB", size as f64 / 1_000_000_000.0)
+                        } else if size >= 1_000_000 {
+                            format!("{:.2} MB", size as f64 / 1_000_000.0)
+                        } else if size >= 1_000 {
+                            format!("{:.2} KB", size as f64 / 1_000.0)
+                        } else {
+                            format!("{} B", size)
+                        };
+                        ui.label(egui::RichText::new(size_str).color(egui::Color32::WHITE));
+                    } else {
+                        ui.label(egui::RichText::new(self.i18n.status_no_file()).color(egui::Color32::WHITE));
+                    }
 
-                if !self.status_message.is_empty() {
-                    ui.separator();
-                    ui.label(&self.status_message);
-                }
+                    if !self.status_message.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new(&self.status_message).color(egui::Color32::WHITE));
+                    }
+                });
             });
-        });
     }
 
     /// 渲染搜索结果面板
@@ -1088,9 +1110,47 @@ impl TextViewerApp {
             .resizable(true)
             .min_height(100.0)
             .default_height(self.results_panel_height)
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(37, 37, 38))
+                .inner_margin(4.0))
             .show(ctx, |ui| {
-                // 面板标题栏
                 ui.horizontal(|ui| {
+                    // 左侧位置指示器
+                    let total_lines = self.line_indexer.total_lines();
+                    if total_lines > 0 {
+                        let position_pct = (self.scroll_line as f32 / total_lines as f32 * 100.0).min(100.0);
+                        let position_text = format!("{:.0}%", position_pct);
+                        
+                        // 绘制位置指示器
+                        let (rect, _response) = ui.allocate_exact_size(
+                            egui::vec2(40.0, ui.available_height().min(20.0)),
+                            egui::Sense::hover()
+                        );
+                        
+                        if ui.is_rect_visible(rect) {
+                            let painter = ui.painter();
+                            // 背景
+                            painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(50, 50, 55));
+                            // 进度条
+                            let progress_width = rect.width() * (position_pct / 100.0);
+                            let progress_rect = egui::Rect::from_min_size(
+                                rect.min,
+                                egui::vec2(progress_width, rect.height())
+                            );
+                            painter.rect_filled(progress_rect, 2.0, egui::Color32::from_rgb(51, 153, 255));
+                            // 文字
+                            painter.text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                &position_text,
+                                egui::FontId::monospace(11.0),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        
+                        ui.add_space(8.0);
+                    }
+                    
                     // 折叠/展开按钮
                     let collapse_btn = if self.results_panel_height > 30.0 { "▼" } else { "▶" };
                     if ui.small_button(collapse_btn).clicked() {
@@ -1119,16 +1179,21 @@ impl TextViewerApp {
                 // 结果列表
                 if self.results_panel_items.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label(self.i18n.panel_no_results());
+                        ui.label(egui::RichText::new(self.i18n.panel_no_results())
+                            .color(egui::Color32::from_rgb(180, 180, 180)));
                     });
                 } else {
                     // 表头
                     ui.horizontal(|ui| {
                         ui.add_sized([80.0, 20.0], egui::Label::new(
-                            egui::RichText::new(self.i18n.panel_line()).strong()
+                            egui::RichText::new(self.i18n.panel_line())
+                                .strong()
+                                .color(egui::Color32::WHITE)
                         ));
                         ui.add_sized([ui.available_width(), 20.0], egui::Label::new(
-                            egui::RichText::new(self.i18n.panel_content()).strong()
+                            egui::RichText::new(self.i18n.panel_content())
+                                .strong()
+                                .color(egui::Color32::WHITE)
                         ));
                     });
                     
@@ -1143,32 +1208,33 @@ impl TextViewerApp {
                             for (idx, item) in self.results_panel_items.iter().enumerate() {
                                 let is_selected = idx == self.current_result_index.saturating_sub(self.search_page_start_index);
                                 
-                                let response = ui.horizontal(|ui| {
-                                    // 行号
-                                    let line_text = format!("{} {}", self.i18n.panel_line(), item.line_number);
-                                    ui.add_sized([80.0, 18.0], egui::Label::new(
-                                        egui::RichText::new(line_text)
-                                            .monospace()
-                                            .color(egui::Color32::LIGHT_BLUE)
-                                    ));
-                                    
-                                    // 内容（高亮搜索词）
-                                    let content = &item.line_content;
-                                    let bg_color = if is_selected {
-                                        egui::Color32::from_rgb(60, 60, 100)
-                                    } else {
-                                        egui::Color32::TRANSPARENT
-                                    };
-                                    
-                                    let frame = egui::Frame::none()
-                                        .fill(bg_color)
-                                        .inner_margin(2.0);
-                                    
-                                    frame.show(ui, |ui| {
-                                        // 简单高亮显示
-                                        self.render_highlighted_content(ui, content, &self.search_query);
+                                let bg_color = if is_selected {
+                                    egui::Color32::from_rgb(38, 79, 120)  // 选中行蓝色背景
+                                } else if idx % 2 == 0 {
+                                    egui::Color32::from_rgb(30, 30, 30)   // 偶数行
+                                } else {
+                                    egui::Color32::from_rgb(37, 37, 38)   // 奇数行
+                                };
+                                
+                                let response = egui::Frame::none()
+                                    .fill(bg_color)
+                                    .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            // 行号
+                                            let line_text = format!("{} {}", self.i18n.panel_line(), item.line_number);
+                                            ui.add_sized([80.0, 18.0], egui::Label::new(
+                                                egui::RichText::new(line_text)
+                                                    .monospace()
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(86, 156, 214))  // 蓝色行号
+                                            ));
+                                            
+                                            // 内容（高亮搜索词）
+                                            let content = &item.line_content;
+                                            self.render_highlighted_content(ui, content, &self.search_query);
+                                        });
                                     });
-                                });
                                 
                                 if response.response.interact(egui::Sense::click()).clicked() {
                                     clicked_index = Some(idx);
@@ -1186,8 +1252,15 @@ impl TextViewerApp {
 
     /// 渲染带高亮的内容
     fn render_highlighted_content(&self, ui: &mut egui::Ui, content: &str, query: &str) {
+        // 文字颜色：深色模式用白色
+        let text_color = if self.dark_mode { 
+            egui::Color32::from_rgb(220, 220, 220)  // 白色
+        } else { 
+            egui::Color32::BLACK 
+        };
+        
         if query.is_empty() || !content.to_lowercase().contains(&query.to_lowercase()) {
-            ui.label(egui::RichText::new(content).monospace().size(12.0));
+            ui.label(egui::RichText::new(content).monospace().size(12.0).color(text_color));
             return;
         }
 
@@ -1205,13 +1278,13 @@ impl TextViewerApp {
                     0.0,
                     egui::TextFormat {
                         font_id: egui::FontId::monospace(12.0),
-                        color: if self.dark_mode { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK },
+                        color: text_color,
                         ..Default::default()
                     },
                 );
             }
             
-            // 添加高亮的匹配文本
+            // 添加高亮的匹配文本（黄色背景黑色字）
             let end = start + query.len();
             job.append(
                 &content[start..end.min(content.len())],
@@ -1219,7 +1292,7 @@ impl TextViewerApp {
                 egui::TextFormat {
                     font_id: egui::FontId::monospace(12.0),
                     color: egui::Color32::BLACK,
-                    background: egui::Color32::YELLOW,
+                    background: egui::Color32::from_rgb(255, 210, 0),  // 黄色高亮
                     ..Default::default()
                 },
             );
@@ -1234,7 +1307,7 @@ impl TextViewerApp {
                 0.0,
                 egui::TextFormat {
                     font_id: egui::FontId::monospace(12.0),
-                    color: if self.dark_mode { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK },
+                    color: text_color,
                     ..Default::default()
                 },
             );
@@ -1404,11 +1477,25 @@ impl TextViewerApp {
                             }
 
                             ui.horizontal(|ui| {
+                                // 行号颜色
+                                let line_number_color = if self.dark_mode {
+                                    egui::Color32::from_rgb(133, 133, 133)  // 灰色行号
+                                } else {
+                                    egui::Color32::DARK_GRAY
+                                };
+                                
+                                // 文本颜色
+                                let text_color = if self.dark_mode {
+                                    egui::Color32::from_rgb(220, 220, 220)  // 白色文本
+                                } else {
+                                    egui::Color32::BLACK
+                                };
+                                
                                 if self.show_line_numbers {
                                     let ln_text =
                                         egui::RichText::new(format!("{:6} ", line_num + 1))
                                             .monospace()
-                                            .color(egui::Color32::DARK_GRAY);
+                                            .color(line_number_color);
                                     ui.add(egui::Label::new(ln_text).selectable(false));
                                 }
 
@@ -1425,11 +1512,7 @@ impl TextViewerApp {
                                                     font_id: egui::FontId::monospace(
                                                         self.font_size,
                                                     ),
-                                                    color: if self.dark_mode {
-                                                        egui::Color32::LIGHT_GRAY
-                                                    } else {
-                                                        egui::Color32::BLACK
-                                                    },
+                                                    color: text_color,
                                                     ..Default::default()
                                                 },
                                             );
@@ -1443,9 +1526,9 @@ impl TextViewerApp {
                                                 font_id: egui::FontId::monospace(self.font_size),
                                                 color: egui::Color32::BLACK,
                                                 background: if *is_selected {
-                                                    egui::Color32::from_rgb(255, 200, 0)
+                                                    egui::Color32::from_rgb(255, 210, 0)  // 当前选中橙黄色
                                                 } else {
-                                                    egui::Color32::YELLOW
+                                                    egui::Color32::from_rgb(255, 255, 0)  // 其他匹配黄色
                                                 },
                                                 ..Default::default()
                                             },
@@ -1460,11 +1543,7 @@ impl TextViewerApp {
                                             0.0,
                                             egui::TextFormat {
                                                 font_id: egui::FontId::monospace(self.font_size),
-                                                color: if self.dark_mode {
-                                                    egui::Color32::LIGHT_GRAY
-                                                } else {
-                                                    egui::Color32::BLACK
-                                                },
+                                                color: text_color,
                                                 ..Default::default()
                                             },
                                         );
@@ -1481,7 +1560,8 @@ impl TextViewerApp {
                                 } else {
                                     let text = egui::RichText::new(line_text)
                                         .monospace()
-                                        .size(self.font_size);
+                                        .size(self.font_size)
+                                        .color(text_color);  // 白色文字
 
                                     if self.wrap_mode {
                                         ui.add(egui::Label::new(text).wrap())
@@ -1657,8 +1737,21 @@ impl eframe::App for TextViewerApp {
             self.go_to_previous_result();
         }
 
+        // 设置 010 Editor 风格主题
         if self.dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            // 010 Editor 风格的深色背景
+            visuals.panel_fill = egui::Color32::from_rgb(30, 30, 30);        // 主面板背景
+            visuals.window_fill = egui::Color32::from_rgb(37, 37, 38);       // 窗口背景
+            visuals.extreme_bg_color = egui::Color32::from_rgb(25, 25, 25);  // 输入框背景
+            visuals.faint_bg_color = egui::Color32::from_rgb(45, 45, 48);    // 次要背景
+            visuals.code_bg_color = egui::Color32::from_rgb(30, 30, 30);     // 代码背景
+            // 白色文字
+            visuals.override_text_color = Some(egui::Color32::from_rgb(220, 220, 220));
+            // 选中高亮色
+            visuals.selection.bg_fill = egui::Color32::from_rgb(38, 79, 120);
+            visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(51, 153, 255));
+            ctx.set_visuals(visuals);
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
