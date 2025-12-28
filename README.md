@@ -1,247 +1,203 @@
-# High-Performance Large Text File Viewer in Rust
-**ECE1724 Rust Course Project Final Report**
+# 高性能大文本文件查看器
 
-
-
-## Team Information
-
-*   **Name**: Jarvis Wang
-*   **Student Number**: 1004071602
-*   **Preferred Email**: jarvis.wang@mail.utoronto.ca
+**基于 Rust 开发的大文本文件查看器**
 
 ---
 
-## Motivation
+## 项目简介
 
-In domains such as systems programming, data science, and DevOps, developers frequently interact with massive text files—server logs, database dumps, and simulation outputs—that can easily exceed gigabytes in size. Modern code editors like Visual Studio Code and Zed are optimized for code editing (AST parsing, syntax highlighting) rather than raw data throughput. Consequently, attempting to open a multi-gigabyte file often results in the editor freezing or crashing due to excessive memory consumption. This is a well-documented issue in the Zed editor community (see [Issue #4701](https://github.com/zed-industries/zed/issues/4701)).
+在系统编程、数据科学和运维领域，开发者经常需要处理海量文本文件——服务器日志、数据库转储和仿真输出——这些文件很容易超过数GB大小。现代代码编辑器如 Visual Studio Code 和 Zed 主要针对代码编辑进行优化（AST 解析、语法高亮），而非原始数据吞吐。因此，尝试打开数GB大小的文件通常会导致编辑器因内存消耗过大而冻结或崩溃。
 
-Users are often forced to resort to command-line tools like `less` or `grep`, which, while efficient, lack the interactivity and convenience of a graphical user interface. There is a clear need for a tool that combines the performance of CLI utilities with the usability of a modern GUI. This project was motivated by the desire to solve this practical pain point using Rust's zero-cost abstractions and memory safety guarantees.
+用户往往被迫使用命令行工具如 `less` 或 `grep`，这些工具虽然高效，但缺乏图形用户界面的交互性和便利性。本项目旨在结合 CLI 工具的高性能和现代 GUI 的可用性，使用 Rust 的零成本抽象和内存安全保证来解决这一实际痛点。
 
-## Objectives
+## 功能特性
 
-The primary objective of this project was to develop a high-performance GUI application capable of handling text files larger than 4GB with minimal resource usage. Specifically, the goals were:
+![界面截图](docs/UI_Screenshot.png)
 
-1.  **Instant Access**: Open files >4GB instantly (<100ms) without loading the entire content into RAM.
-2.  **Efficient Search**: Perform multi-threaded searches for literal strings and regular expressions with sub-second latency.
-3.  **Safe Editing**: Enable content modification using atomic replace operations to ensure data integrity.
-4.  **Low Memory Footprint**: Maintain a base memory usage of under 100MB, regardless of the file size.
-5.  **Responsiveness**: Ensure the UI remains responsive (60 FPS) during heavy background operations.
+### 核心功能
 
-The project serves as both a standalone application (crate: [`large-text-viewer`](https://crates.io/crates/large-text-viewer)) and a proof-of-concept backend (crate: [`large-text-core`](https://crates.io/crates/large-text-core)) for a future extension to the Zed editor.
+1. **内存映射文件查看**：利用 `memmap2` 将文件视为内存切片，让操作系统处理分页。这使得打开比可用 RAM 更大的文件成为可能。
 
-## Features
-![UI Screenshot](docs/UI_Screenshot.png)
+2. **混合行索引**：
+   - **全量索引**：对于小文件（<10MB），提供精确的行映射
+   - **稀疏索引**：对于大文件，使用检查点系统保持索引内存使用量可忽略不计（100GB文件仅需<1MB）
 
-The final deliverable offers the following key features:
+3. **虚拟滚动**：仅渲染当前视口中可见的行，确保恒定的渲染性能
 
-1.  **Memory-Mapped File Viewing**: Utilizes `memmap2` to treat files as memory slices, allowing the OS to handle paging. This enables opening files larger than available RAM.
-2.  **Hybrid Line Indexing**:
-    *   **Full Index**: For small files (<10MB), provides exact line mapping.
-    *   **Sparse Index**: For large files, uses a checkpoint-based system to keep index memory usage negligible (<1MB for 100GB files).
-3.  **Virtual Scrolling**: Renders only the lines currently visible in the viewport, ensuring constant rendering performance.
-4.  **Asynchronous Parallel Search**:
-    *   Supports Case-Sensitive and Regex queries.
-    *   "Find All" operations run on background threads without blocking the UI.
-    *   Real-time progress reporting and result streaming.
-5.  **Streaming Replace**:
-    *   **In-Place**: Optimized replacement for same-length strings.
-    *   **Copy-on-Write**: Safe, atomic replacement for different-length strings using temporary files.
-    *   **Pending Replacements**: "Virtual editing" allows users to queue changes in memory before committing to disk.
-6.  **Encoding Support**: Auto-detection and support for UTF-8, UTF-16 (LE/BE), and Windows-1252.
+4. **异步并行搜索**：
+   - 支持区分大小写和正则表达式查询
+   - "查找全部"操作在后台线程运行，不阻塞 UI
+   - 实时进度报告和结果流式传输
 
-## Design and Implementation
-The application follows a modular architecture, separating the core file processing logic from the user interface. This separation of concerns facilitates testing and future integration into other platforms (e.g., as a Zed extension).
+5. **流式替换**：
+   - **就地替换**：针对相同长度字符串的优化替换
+   - **写时复制**：使用临时文件进行安全、原子的不同长度字符串替换
+   - **挂起替换**："虚拟编辑"允许用户在内存中排队更改，然后再提交到磁盘
 
-### High-Level Components
-The system is divided into two primary layers:
+6. **编码支持**：自动检测并支持 UTF-8、UTF-16（LE/BE）和 Windows-1252
 
-1.  **Core Layer (`large-text-core`)**:
-    *   **`FileReader`**: Manages memory-mapped file access using the `memmap2` crate. It handles encoding detection and decoding, presenting a unified interface for byte-level access.
-    *   **`LineIndexer`**: Responsible for mapping line numbers to byte offsets. It implements the hybrid indexing strategy to balance memory usage and access speed.
-    *   **`SearchEngine`**: A parallelized search module that scans the memory-mapped file in chunks.
-    *   **`Replacer`**: Handles file modifications, ensuring data integrity through copy-on-write mechanisms.
+7. **中英文切换**：支持界面语言在中文和英文之间切换
 
-2.  **UI Layer (`large-text-viewer`)**:
-    *   Built using `egui`, an immediate mode GUI library for Rust.
-    *   **`TextViewerApp`**: The main application state manager. It handles user input, manages the viewport (virtual scrolling), and coordinates asynchronous tasks (search, replace) via channels.
+8. **搜索结果面板**：底部显示搜索结果列表，点击可跳转，类似 010 Editor
 
-```mermaid
-%%{init: {'flowchart': {'curve': 'step'}}}%%
-flowchart TD
-    main["main.rs<br>entrypoint"] --> app["TextViewerApp<br>(app.rs)"]
+9. **快捷键支持**：
+   | 快捷键 | 功能 |
+   |--------|------|
+   | ⌘F / Ctrl+F | 打开搜索 |
+   | ⌘R / Ctrl+R | 打开替换 |
+   | ⌘S / Ctrl+S | 保存文件 |
+   | F3 | 下一个结果 |
+   | Shift+F3 | 上一个结果 |
+   | Escape | 关闭搜索栏 |
 
-    subgraph UI [egui]
-        menu["Menu/Toolbar/Status/Dialogs"]
-        viewport["Central text area<br>(show_rows, wrap, highlights, line nos)"]
-    end
+## 性能目标
 
-    subgraph Core [Core]
-        fr["FileReader<br>memmap + decoding"]
-        li["LineIndexer<br>full/sparse offsets"]
-        se["SearchEngine<br>chunked literal/regex"]
-        watcher["Tail watcher<br>(notify)"]
-    end
+1. **即时访问**：即时打开 >4GB 的文件（<100ms），无需将全部内容加载到 RAM
+2. **高效搜索**：对文字字符串和正则表达式进行多线程搜索，延迟低于一秒
+3. **安全编辑**：使用原子替换操作启用内容修改，确保数据完整性
+4. **低内存占用**：无论文件大小，保持基础内存使用低于 100MB
+5. **响应性**：确保 UI 在繁重后台操作期间保持响应（60 FPS）
 
-    app --> menu
-    app --> viewport
-    app --> fr
-    app --> li
-    app --> se
-    app --> watcher
+## 安装指南
 
-    fr --> li
-    fr --> se
-    li --> viewport
-    se --> viewport
+### 方法一：使用 Cargo 安装
 
-    menu -->|open file| app
-    menu -->|encoding select| app
-    menu -->|search actions| app
-    menu -->|tail toggle| watcher
-```
-
-### Data Flow
-The application relies heavily on asynchronous communication to keep the UI responsive.
-*   **Search**: The UI sends a query to the `SearchEngine`, which spawns threads. Results are streamed back to the UI via a `mpsc` channel (`SearchMessage::CountResult`, `SearchMessage::ChunkResult`), allowing the UI to update progress bars and highlight matches in real-time without blocking the render loop.
-
-```mermaid
-sequenceDiagram
-    participant UI as UI (toolbar/status)
-    participant App as TextViewerApp
-    participant Reader as FileReader
-    participant Indexer as LineIndexer
-    participant Search as SearchEngine
-
-    UI->>App: perform_search(query, regex?)
-    App->>Search: set_query()
-    App->>Search: count_matches(Reader, channel)
-
-    loop Search Thread
-        Search->>Reader: get_bytes(chunk)
-        Search-->>App: SearchMessage::CountResult
-    end
-
-    App->>UI: status "Found N matches"
-
-    UI->>App: next/prev
-    App->>Search: fetch_matches(Reader, channel)
-    Search-->>App: SearchMessage::ChunkResult
-    App->>UI: scroll_to_row(target line)
-
-    App->>Indexer: get_line(line)
-    Indexer->>Reader: get_bytes(span)
-    App->>UI: render line with inline highlights
-```
-*   **Rendering**: The UI requests only the lines currently visible in the viewport. The `LineIndexer` calculates the byte ranges, and the `FileReader` decodes only those specific bytes from the memory map.
-
-
-## User’s Guide
-
-### 1. Installation & Launch
-To install the application via Cargo, run the following command in your terminal (Windows, macOS, or Linux):
 ```bash
 cargo install large-text-viewer
 ```
-Once installed, start the application by typing:
+
+安装后，在终端输入以下命令启动：
+
 ```bash
 large-text-viewer
 ```
 
-### 2. Opening a File
-*   Launch the application.
-*   Click **File > Open...** in the menu bar.
-*   Select any text file (no size limit). The file will load instantly.
-*   *Note*: The status bar at the bottom displays the file size, estimated line count, and detected encoding.
+### 方法二：从源码编译
 
-### 3. Navigation
-*   **Scroll**: Use the mouse wheel or the scroll bar on the right to navigate.
-*   **Go to Line**: Enter a line number in the "Go to line" box in the toolbar and press Enter or click "Go".
+1. 确保已安装 Rust 工具链：
 
-### 4. Searching
-*   Press **Ctrl+F** or click **Search > Find** to open the search toolbar.
-*   Enter your query in the text box.
-*   **Options**:
-    *   Toggle **Aa** for Case Sensitivity.
-    *   Toggle **.*** for Regular Expressions.
-*   **Actions**:
-    *   Click **Find** (or press Enter) to jump to the next match.
-    *   Click **Find All** to count all matches in the file. The count will appear next to the search box (e.g., "1/1050").
-    *   Use **Previous** / **Next** buttons to navigate through results.
-
-### 5. Replacing
-*   Press **Ctrl+R** or click **Search > Replace** to open the replace toolbar.
-*   Enter the search term and the replacement text.
-*   **Single Replace**: Click **Replace** to queue a change for the current match. This is a "pending" change and is not written to disk immediately.
-*   **Replace All**: Click **Replace All**. You will be prompted to select an output file location. The operation will process the file in the background and write to the new file.
-
-### 6. Saving Changes
-*   If you have made single replacements, the window title will show an asterisk (*).
-*   Click **File > Save (Ctrl+S)**.
-*   You can overwrite the current file or save to a new path. Pending replacements will be applied during the save process.
-
-## Reproducibility Guide
-
-The instructor can follow these steps to build and run the project on Ubuntu Linux or macOS.
-
-### 1. Prerequisites
-Ensure the Rust toolchain is installed:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 ```
 
-### 2. Build the Project
-Clone this repo, navigate to the project root directory and build in release mode for optimal performance:
+2. 克隆仓库并编译：
+
 ```bash
+git clone https://github.com/acejarvis/large-text-viewer
 cd large-text-viewer
 cargo build --release
 ```
 
-### 3. Generate Test Files (Optional)
-To test the large file capabilities, you can use the provided script to generate a large dummy file (e.g., 1GB):
-```bash
-# Make the script executable
-chmod +x scripts/generate_test_files.sh
-# Run the script (generates files in a 'test_files' directory)
-./scripts/generate_test_files.sh
-```
-*Note: This script creates a few files of varying sizes for testing purposes.*
+3. 运行程序：
 
-Or just simply run the unit test:
-```bash
-cargo test --workspace
-```
-
-### 4. Run the Application
-Execute the binary:
 ```bash
 cargo run --release
 ```
-Or run the binary directly from the target folder:
+
+或直接运行编译好的二进制文件：
+
 ```bash
 ./target/release/large-text-viewer
 ```
 
-## Contributions by each team member
+## 使用指南
 
-**Jarvis Wang (Solo Project)**
-*   **Core Logic**: Designed and implemented the `large-text-core` library, including the `FileReader` (memmap2 integration), `LineIndexer` (hybrid sparse indexing algorithm), `SearchEngine` (multi-threaded chunk search), and `Replacer` (streaming copy-on-write logic).
-*   **User Interface**: Built the `large-text-viewer` GUI using `egui`, implementing the virtual viewport rendering, event handling, and asynchronous state management.
-*   **Testing & Documentation**: Wrote unit tests for core components, created the architecture documentation, and conducted performance benchmarking.
-*   **CI/CD**: Built GitHub Actions workflows for automated testing, linting (clippy, cloc), and cross-platform builds (Windows, macOS, Ubuntu) to ensure code quality and portability as well as the release workflows to publish the app and crate packages to the [crates.io](https://crates.io/) registry.
+### 1. 打开文件
 
+- 启动应用程序
+- 点击菜单栏的 **文件 > 打开...**
+- 选择任意文本文件（无大小限制），文件将立即加载
+- *注意*：底部状态栏显示文件大小、估计行数和检测到的编码
 
-## Lessons learned and concluding remarks
+### 2. 导航
 
-### Lessons Learned
-1.  **The Complexity of Text Encoding**: Handling non-UTF-8 encodings in a memory-mapped environment proved challenging. Since Rust strings are strictly UTF-8, we had to implement a decoding layer that converts raw bytes from the memory map into Rust `String`s only for the visible viewport.
-2.  **Sparse Indexing Precision**: Implementing the sparse index required careful mathematics. Estimating line numbers between checkpoints works well for navigation but makes exact line counting difficult. We learned to accept trade-offs (e.g., displaying "~10.5M lines") to achieve performance goals.
-3.  **UI Responsiveness**: Initial implementations of the search feature blocked the main UI thread. Moving the search logic to a separate thread and using `std::sync::mpsc` channels was essential for a smooth user experience.
+- **滚动**：使用鼠标滚轮或右侧滚动条进行导航
+- **跳转到行**：在工具栏的"跳转到行"框中输入行号，按回车或点击"跳转"
 
-### Concluding Remarks
-The "Large Text Viewer" project successfully demonstrates that Rust's zero-cost abstractions and memory safety guarantees make it an ideal language for high-performance systems tools. By combining memory-mapped I/O with a sparse indexing strategy, we created a tool that outperforms standard editors by orders of magnitude when handling large files. The project meets all primary objectives, delivering a robust, memory-efficient, and responsive application.
+### 3. 搜索
 
-# Video Slide Presentation
-[Large Text Viewer Slide Presentation](https://youtu.be/FL5U76ybcgc)
-# Video Demo
-[Large Text Viewer Video Demo](https://youtu.be/ial4q7573Qk)
+- 按 **⌘F** (macOS) 或 **Ctrl+F** (Windows/Linux) 打开搜索工具栏
+- 在文本框中输入查询内容
+- **选项**：
+  - 切换 **Aa** 启用区分大小写
+  - 切换 **.\*** 启用正则表达式
+- **操作**：
+  - 点击 **查找**（或按回车）执行搜索
+  - 点击 **查找全部** 统计文件中的所有匹配项
+  - 使用 **上一个** / **下一个** 按钮或 **F3** / **Shift+F3** 在结果间导航
+- **搜索结果面板**：
+  - 底部自动显示搜索结果列表
+  - 显示行号和匹配内容，点击可直接跳转
+  - 匹配文本黄色高亮显示
+  - 可折叠/展开、可调整大小
+
+### 4. 替换
+
+- 按 **⌘R** (macOS) 或 **Ctrl+R** (Windows/Linux) 打开替换工具栏
+- 输入搜索词和替换文本
+- **单次替换**：点击 **替换** 为当前匹配项排队更改。这是"挂起"更改，不会立即写入磁盘
+- **全部替换**：点击 **全部替换**。系统将提示您选择输出文件位置。操作将在后台处理文件并写入新文件
+
+### 5. 保存更改
+
+- 如果您进行了单次替换，窗口标题将显示星号 (*)
+- 按 **⌘S** (macOS) 或 **Ctrl+S** (Windows/Linux) 或点击 **文件 > 保存**
+- 您可以覆盖当前文件或保存到新路径。保存过程中将应用挂起的替换
+
+### 6. 切换语言
+
+- 点击菜单栏的 **语言**
+- 选择 **中文** 或 **English**
+
+## 架构设计
+
+### 高层组件
+
+系统分为两个主要层：
+
+1. **核心层 (`large-text-core`)**：
+   - **`FileReader`**：使用 `memmap2` crate 管理内存映射文件访问，处理编码检测和解码
+   - **`LineIndexer`**：负责将行号映射到字节偏移量，实现混合索引策略以平衡内存使用和访问速度
+   - **`SearchEngine`**：并行化搜索模块，按块扫描内存映射文件
+   - **`Replacer`**：处理文件修改，通过写时复制机制确保数据完整性
+
+2. **UI 层 (`large-text-viewer`)**：
+   - 使用 `egui` 构建，这是 Rust 的即时模式 GUI 库
+   - **`TextViewerApp`**：主应用程序状态管理器，处理用户输入、管理视口（虚拟滚动）并通过通道协调异步任务
+
+### 数据流
+
+应用程序大量依赖异步通信来保持 UI 响应。
+
+- **搜索**：UI 向 `SearchEngine` 发送查询，后者生成线程。结果通过 `mpsc` 通道流式返回 UI，允许 UI 实时更新进度条和高亮匹配项，而不阻塞渲染循环
+
+- **渲染**：UI 仅请求当前视口中可见的行。`LineIndexer` 计算字节范围，`FileReader` 仅从内存映射解码那些特定字节
+
+## 生成测试文件
+
+要测试大文件功能，可以使用提供的脚本生成大型测试文件（如 1GB）：
+
+```bash
+# 使脚本可执行
+chmod +x scripts/generate_test_files.sh
+# 运行脚本（在 'test_files' 目录中生成文件）
+./scripts/generate_test_files.sh
+```
+
+或者直接运行单元测试：
+
+```bash
+cargo test --workspace
+```
+
+## 许可证
+
+MIT License
+
+## 相关链接
+
+- [GitHub 仓库](https://github.com/acejarvis/large-text-viewer)
+- [Crates.io - large-text-viewer](https://crates.io/crates/large-text-viewer)
+- [Crates.io - large-text-core](https://crates.io/crates/large-text-core)
+
