@@ -12,7 +12,7 @@
 
 ## 功能特性
 
-![界面截图](docs/UI_Screenshot.png)
+![界面截图](docs/UI_Screenshot.jpg)
 
 ### 核心功能
 
