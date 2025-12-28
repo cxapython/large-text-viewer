@@ -13,10 +13,6 @@ anyhow = "1.0"
 encoding_rs = "0.8"
 memmap2 = "0.9"
 regex = "1.10"
-grep-regex = "0.1"
-grep-searcher = "0.1"
-grep-matcher = "0.1"
-memchr = "2.7"
 
 [dev-dependencies]
 tempfile = "3.23.0"

@@ -24,11 +24,10 @@
 
 3. **虚拟滚动**：仅渲染当前视口中可见的行，确保恒定的渲染性能
 
-4. **高性能搜索引擎**（基于 ripgrep 底层技术）：
-   - 使用 `grep-regex`、`grep-searcher` 等 ripgrep 核心库
-   - 对于纯文本搜索使用 `memchr` SIMD 加速，性能提升 5-10 倍
-   - 智能字面量提取优化，自动选择最优搜索策略
+4. **多线程搜索引擎**：
+   - 基于 `regex` 库的高性能正则匹配
    - 支持区分大小写和正则表达式查询
+   - 多线程并行搜索，充分利用多核 CPU
    - "查找全部"操作在后台线程运行，不阻塞 UI
    - 实时进度报告和结果流式传输
 
@@ -116,12 +115,54 @@ pub trait Plugin: Send {
 
 **示例：** 参考 `src/trace_plugin.rs` 的实现
 
-> **关于 Python 脚本插件支持：** 当前版本暂不支持 Python 脚本开发插件。如需此功能，可通过集成 [PyO3](https://github.com/PyO3/pyo3) crate 实现 Python 嵌入。这需要：
-> - 添加 `pyo3` 依赖到 `Cargo.toml`
-> - 创建 Python 插件适配器类
-> - 定义 Python 接口 (可使用 `#[pyclass]` 和 `#[pymethods]`)
-> 
-> 实现复杂度：中等（约 500-1000 行代码）
+#### Python 插件支持 (可选)
+
+现在支持使用 Python 3 编写插件！启用方法：
+
+```bash
+# 编译时启用 Python 插件支持
+cargo build --release --features python-plugins
+```
+
+**Python 插件目录：** `~/.large-text-viewer/plugins/`
+
+**快速开始：**
+
+```python
+# ~/.large-text-viewer/plugins/my_plugin.py
+class LTVPlugin:
+    def info(self):
+        return {
+            'id': 'my_plugin',
+            'name': 'My Plugin',
+            'name_cn': '我的插件',
+            'description': 'A custom plugin',
+            'description_cn': '自定义插件',
+            'version': '1.0.0',
+            'author': 'Your Name',
+            'icon': '🔧',
+        }
+    
+    def can_handle(self, content_sample):
+        return 'MY_MARKER' in content_sample
+    
+    def on_activate(self, content_sample):
+        pass
+    
+    def on_deactivate(self):
+        pass
+    
+    def get_panel_data(self):
+        return {'items': [
+            {'type': 'section', 'label': '📊 Stats'},
+            {'type': 'stat', 'label': 'Lines', 'value': '100'},
+        ]}
+    
+    def process_line(self, line):
+        return [{'text': line}]
+```
+
+详细文档请参考 `docs/PLUGIN_DEVELOPMENT.md`
 
 ## 性能目标
 
@@ -238,7 +279,7 @@ cargo run --release
 1. **核心层 (`large-text-core`)**：
    - **`FileReader`**：使用 `memmap2` crate 管理内存映射文件访问，处理编码检测和解码
    - **`LineIndexer`**：负责将行号映射到字节偏移量，实现混合索引策略以平衡内存使用和访问速度
-   - **`SearchEngine`**：基于 ripgrep 底层库（`grep-regex`、`grep-searcher`、`memchr`）的高性能搜索引擎，支持 SIMD 加速和智能搜索策略
+   - **`SearchEngine`**：基于 `regex` 库的多线程搜索引擎，支持并行搜索和流式结果返回
    - **`Replacer`**：处理文件修改，通过写时复制机制确保数据完整性
 
 2. **插件层**：

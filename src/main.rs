@@ -5,11 +5,21 @@ mod plugins;
 mod trace_plugin;
 mod trace_analyzer;
 mod trace_mode;
+#[cfg(feature = "python-plugins")]
+mod python_plugin;
 
 use app::TextViewerApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    // 初始化 Python 插件系统
+    #[cfg(feature = "python-plugins")]
+    {
+        if let Err(e) = python_plugin::PythonPluginLoader::init_python() {
+            eprintln!("警告: Python 插件系统初始化失败: {}", e);
+        }
+    }
+    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])

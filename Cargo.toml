@@ -20,3 +20,19 @@ anyhow = "1.0"
 encoding_rs = "0.8"
 regex = "1.10"
 large-text-core = { path = "crates/large-text-core", version = "0.1.1" }
+
+# Python 插件支持
+pyo3 = { version = "0.22", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []
+python-plugins = ["pyo3"]
+
+[build-dependencies]
+pyo3-build-config = { version = "0.22", optional = true }
+
+[package.metadata.pyo3]
+# 使用系统 Python
+python = "/usr/bin/python3"

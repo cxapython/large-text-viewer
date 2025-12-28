@@ -18,6 +18,8 @@ use crate::trace_analyzer::TraceAnalyzer;
 use crate::trace_mode::{TraceModeState, render_filter_panel, render_stats_panel};
 use crate::plugin::{PluginManager, render_plugin_selector};
 use crate::trace_plugin::TraceAnalyzerPlugin;
+#[cfg(feature = "python-plugins")]
+use crate::python_plugin::PythonPluginLoader;
 
 /// 搜索结果项，用于结果面板显示
 #[derive(Clone)]
@@ -184,7 +186,16 @@ impl Default for TextViewerApp {
             trace_mode: TraceModeState::default(),
             plugin_manager: {
                 let mut pm = PluginManager::new();
+                // 注册内置插件
                 pm.register(Box::new(TraceAnalyzerPlugin::new()));
+                // 加载 Python 插件
+                #[cfg(feature = "python-plugins")]
+                {
+                    let plugin_dir = PythonPluginLoader::default_plugin_dir();
+                    for plugin in PythonPluginLoader::load_from_directory(&plugin_dir) {
+                        pm.register(plugin);
+                    }
+                }
                 pm
             },
         }

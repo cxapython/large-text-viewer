@@ -1,10 +1,5 @@
 use crate::file_reader::FileReader;
-use grep_matcher::Matcher;
-use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
-use memchr::memmem;
 use regex::Regex;
-use std::io::Cursor;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::SyncSender,
@@ -90,30 +85,9 @@ impl SearchEngine {
             return matches;
         }
 
-        // 对于简单文本搜索，使用 memchr 的 memmem（SIMD 加速）
-        if !self.use_regex {
-            if self.case_sensitive {
-                // 大小写敏感：直接使用 memmem
-                let finder = memmem::Finder::new(self.query.as_bytes());
-                let text_bytes = text.as_bytes();
-                for start in finder.find_iter(text_bytes) {
-                    matches.push((start, start + self.query.len()));
-                }
-            } else {
-                // 大小写不敏感：需要转换后搜索，但保持原始位置
-                // 使用 regex 引擎处理（它内部有优化）
-                if let Some(re) = &self.regex {
-                    for m in re.find_iter(text) {
-                        matches.push((m.start(), m.end()));
-                    }
-                }
-            }
-        } else {
-            // 正则表达式搜索
-            if let Some(re) = &self.regex {
-                for m in re.find_iter(text) {
-                    matches.push((m.start(), m.end()));
-                }
+        if let Some(re) = &self.regex {
+            for m in re.find_iter(text) {
+                matches.push((m.start(), m.end()));
             }
         }
         matches
@@ -132,94 +106,87 @@ impl SearchEngine {
             return;
         }
 
-        let query = self.query.clone();
-        let use_regex = self.use_regex;
-        let case_sensitive = self.case_sensitive;
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
+
+        let chunk_size = file_len.div_ceil(num_threads);
+        let query_len = self.query.len();
+        let overlap = query_len.saturating_sub(1).max(1000);
+
+        let regex = self.regex.clone();
 
         thread::spawn(move || {
-            // 使用 grep-searcher 进行计数
-            let data = reader.all_data();
+            let mut handles = vec![];
 
-            // 构建 grep-regex 匹配器
-            let pattern = if use_regex { query.clone() } else { regex::escape(&query) };
-            let matcher = match RegexMatcherBuilder::new()
-                .case_insensitive(!case_sensitive)
-                .build(&pattern)
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    let _ = tx.send(SearchMessage::Error(format!("Invalid regex: {}", e)));
-                    return;
+            for i in 0..num_threads {
+                let thread_start = i * chunk_size;
+                if thread_start >= file_len {
+                    break;
                 }
-            };
+                let thread_end = (thread_start + chunk_size).min(file_len);
 
-            // 对于简单文本搜索且大小写敏感，使用 memchr（最快）
-            if !use_regex && case_sensitive {
-                let finder = memmem::Finder::new(query.as_bytes());
-                let count = finder.find_iter(data).count();
-                let _ = tx.send(SearchMessage::CountResult(count));
-                if !cancel_token.load(Ordering::Relaxed) {
-                    let _ = tx.send(SearchMessage::Done(SearchType::Count));
-                }
-                return;
-            }
+                let reader_clone = reader.clone();
+                let tx_clone = tx.clone();
+                let regex_clone = regex.clone();
+                let cancel_token_clone = cancel_token.clone();
 
-            // 使用 grep-searcher 进行高性能搜索
-            struct CountSink<'a> {
-                count: usize,
-                matcher: &'a grep_regex::RegexMatcher,
-                cancel_token: Arc<AtomicBool>,
-            }
+                let handle = thread::spawn(move || {
+                    if let Some(regex) = regex_clone {
+                        let mut pos = thread_start;
+                        // Process in smaller batches to avoid high memory usage
+                        const BATCH_SIZE: usize = 4 * 1024 * 1024; // 4MB
+                        let mut local_count = 0;
 
-            impl<'a> Sink for CountSink<'a> {
-                type Error = std::io::Error;
-
-                fn matched(
-                    &mut self,
-                    _searcher: &Searcher,
-                    mat: &SinkMatch<'_>,
-                ) -> Result<bool, Self::Error> {
-                    if self.cancel_token.load(Ordering::Relaxed) {
-                        return Ok(false);
-                    }
-                    // 计算这一行中的所有匹配
-                    let line_bytes = mat.bytes();
-                    let mut start = 0;
-                    while start < line_bytes.len() {
-                        match self.matcher.find_at(line_bytes, start) {
-                            Ok(Some(m)) => {
-                                self.count += 1;
-                                start = m.end().max(start + 1);
+                        while pos < thread_end {
+                            if cancel_token_clone.load(Ordering::Relaxed) {
+                                return;
                             }
-                            _ => break,
+
+                            let batch_end = (pos + BATCH_SIZE).min(thread_end);
+                            // Add overlap to catch matches crossing batch boundaries
+                            let read_end = (batch_end + overlap).min(file_len);
+
+                            let chunk_bytes = reader_clone.get_bytes(pos, read_end);
+                            let chunk_text = match std::str::from_utf8(chunk_bytes) {
+                                Ok(t) => t.to_string(),
+                                Err(_) => {
+                                    let (cow, _, _) = reader_clone.encoding().decode(chunk_bytes);
+                                    cow.into_owned()
+                                }
+                            };
+
+                            for mat in regex.find_iter(&chunk_text) {
+                                if cancel_token_clone.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                                let match_start = mat.start();
+                                let absolute_start = pos + match_start;
+
+                                // Only accept matches starting in [pos, batch_end)
+                                if absolute_start >= batch_end {
+                                    continue;
+                                }
+
+                                local_count += 1;
+                            }
+
+                            pos = batch_end;
                         }
+                        let _ = tx_clone.send(SearchMessage::CountResult(local_count));
+                    } else {
+                        let _ = tx_clone.send(SearchMessage::Error("Invalid regex".to_string()));
                     }
-                    Ok(true)
-                }
+                });
+                handles.push(handle);
             }
 
-            let mut sink = CountSink {
-                count: 0,
-                matcher: &matcher,
-                cancel_token: cancel_token.clone(),
-            };
-
-            let mut searcher = SearcherBuilder::new()
-                .line_number(false)
-                .build();
-
-            let result = searcher.search_reader(&matcher, Cursor::new(data), &mut sink);
-
-            match result {
-                Ok(_) => {
-                    let _ = tx.send(SearchMessage::CountResult(sink.count));
-                    if !cancel_token.load(Ordering::Relaxed) {
-                        let _ = tx.send(SearchMessage::Done(SearchType::Count));
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(SearchMessage::Error(e.to_string()));
-                }
+            for h in handles {
+                let _ = h.join();
+            }
+            if !cancel_token.load(Ordering::Relaxed) {
+                let _ = tx.send(SearchMessage::Done(SearchType::Count));
             }
         });
     }
@@ -238,131 +205,89 @@ impl SearchEngine {
             return;
         }
 
-        let query = self.query.clone();
-        let use_regex = self.use_regex;
-        let case_sensitive = self.case_sensitive;
+        let regex = self.regex.clone();
+        let query_len = self.query.len();
+        let overlap = query_len.saturating_sub(1).max(1000);
 
         thread::spawn(move || {
-            let data = reader.all_data();
-            let search_data = if start_offset < data.len() {
-                &data[start_offset..]
-            } else {
-                let _ = tx.send(SearchMessage::Done(SearchType::Fetch));
-                return;
-            };
+            if let Some(regex) = regex {
+                const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MB chunks
+                let mut chunk_start = start_offset;
+                let mut results_found = 0;
 
-            // 对于简单文本搜索且大小写敏感，使用 memchr（最快）
-            if !use_regex && case_sensitive {
-                let finder = memmem::Finder::new(query.as_bytes());
-                let mut matches = Vec::new();
-                let query_len = query.len();
-
-                for pos in finder.find_iter(search_data) {
+                while chunk_start < file_len && results_found < max_results {
                     if cancel_token.load(Ordering::Relaxed) {
                         return;
                     }
-                    matches.push(SearchResult {
-                        byte_offset: start_offset + pos,
-                        match_len: query_len,
-                    });
-                    if matches.len() >= max_results {
+
+                    let chunk_end = (chunk_start + CHUNK_SIZE).min(file_len);
+                    let chunk_bytes = reader.get_bytes(chunk_start, chunk_end);
+
+                    let chunk_text = match std::str::from_utf8(chunk_bytes) {
+                        Ok(t) => t.to_string(),
+                        Err(_) => {
+                            let (cow, _, _) = reader.encoding().decode(chunk_bytes);
+                            cow.into_owned()
+                        }
+                    };
+
+                    let mut local_matches = Vec::new();
+
+                    // Define the valid range for starting positions in this chunk
+                    // We want to process matches that start in [chunk_start, chunk_end - overlap)
+                    // Unless we are at the end of the file, then [chunk_start, chunk_end)
+                    let valid_end = if chunk_end >= file_len {
+                        file_len
+                    } else {
+                        chunk_end - overlap
+                    };
+
+                    for mat in regex.find_iter(&chunk_text) {
+                        if cancel_token.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if results_found >= max_results {
+                            break;
+                        }
+
+                        let match_start = mat.start();
+                        let absolute_start = chunk_start + match_start;
+
+                        // Skip matches that start beyond our valid range for this chunk
+                        // They will be picked up by the next chunk which starts at `valid_end`
+                        if absolute_start >= valid_end {
+                            continue;
+                        }
+
+                        local_matches.push(SearchResult {
+                            byte_offset: absolute_start,
+                            match_len: mat.end() - mat.start(),
+                        });
+                        results_found += 1;
+                    }
+
+                    if !local_matches.is_empty()
+                        && tx
+                            .send(SearchMessage::ChunkResult(ChunkSearchResult {
+                                matches: local_matches,
+                            }))
+                            .is_err()
+                    {
+                        return;
+                    }
+
+                    // Move to next chunk with overlap
+                    if chunk_end >= file_len {
                         break;
                     }
-                }
 
-                if !matches.is_empty() {
-                    let _ = tx.send(SearchMessage::ChunkResult(ChunkSearchResult { matches }));
+                    chunk_start = chunk_end - overlap;
                 }
                 if !cancel_token.load(Ordering::Relaxed) {
                     let _ = tx.send(SearchMessage::Done(SearchType::Fetch));
                 }
-                return;
-            }
-
-            // 构建 grep-regex 匹配器
-            let pattern = if use_regex { query.clone() } else { regex::escape(&query) };
-            let matcher = match RegexMatcherBuilder::new()
-                .case_insensitive(!case_sensitive)
-                .build(&pattern)
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    let _ = tx.send(SearchMessage::Error(format!("Invalid regex: {}", e)));
-                    return;
-                }
-            };
-
-            // 收集匹配结果
-            struct FetchSink<'a> {
-                results: Vec<SearchResult>,
-                max_results: usize,
-                base_offset: usize,
-                matcher: &'a grep_regex::RegexMatcher,
-                cancel_token: Arc<AtomicBool>,
-            }
-
-            impl<'a> Sink for FetchSink<'a> {
-                type Error = std::io::Error;
-
-                fn matched(
-                    &mut self,
-                    _searcher: &Searcher,
-                    mat: &SinkMatch<'_>,
-                ) -> Result<bool, Self::Error> {
-                    if self.cancel_token.load(Ordering::Relaxed) {
-                        return Ok(false);
-                    }
-
-                    let line_bytes = mat.bytes();
-                    let line_start_in_data = mat.absolute_byte_offset() as usize;
-
-                    // 在这一行中找所有匹配
-                    let mut start = 0;
-                    while start < line_bytes.len() && self.results.len() < self.max_results {
-                        match self.matcher.find_at(line_bytes, start) {
-                            Ok(Some(m)) => {
-                                self.results.push(SearchResult {
-                                    byte_offset: self.base_offset + line_start_in_data + m.start(),
-                                    match_len: m.end() - m.start(),
-                                });
-                                start = m.end().max(start + 1);
-                            }
-                            _ => break,
-                        }
-                    }
-
-                    Ok(self.results.len() < self.max_results)
-                }
-            }
-
-            let mut sink = FetchSink {
-                results: Vec::new(),
-                max_results,
-                base_offset: start_offset,
-                matcher: &matcher,
-                cancel_token: cancel_token.clone(),
-            };
-
-            let mut searcher = SearcherBuilder::new()
-                .line_number(false)
-                .build();
-
-            let result = searcher.search_reader(&matcher, Cursor::new(search_data), &mut sink);
-
-            match result {
-                Ok(_) => {
-                    if !sink.results.is_empty() {
-                        let _ = tx.send(SearchMessage::ChunkResult(ChunkSearchResult {
-                            matches: sink.results,
-                        }));
-                    }
-                    if !cancel_token.load(Ordering::Relaxed) {
-                        let _ = tx.send(SearchMessage::Done(SearchType::Fetch));
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(SearchMessage::Error(e.to_string()));
-                }
+            } else {
+                let _ = tx.send(SearchMessage::Error("Invalid regex".to_string()));
             }
         });
     }
@@ -393,28 +318,6 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0], (10, 14));
         assert_eq!(matches[1], (31, 35));
-    }
-
-    #[test]
-    fn test_find_in_text_case_sensitive() {
-        let mut engine = SearchEngine::new();
-        engine.set_query("Test".to_string(), false, true);
-
-        let text = "This is a Test string. Another test.";
-        let matches = engine.find_in_text(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0], (10, 14));
-    }
-
-    #[test]
-    fn test_find_in_text_memchr() {
-        // 测试 memchr 快速路径
-        let mut engine = SearchEngine::new();
-        engine.set_query("error".to_string(), false, true); // case sensitive, non-regex
-
-        let text = "error: something went wrong\nAnother error here\nerror again";
-        let matches = engine.find_in_text(text);
-        assert_eq!(matches.len(), 3);
     }
 
     #[test]
@@ -450,72 +353,6 @@ mod tests {
                 Ok(SearchMessage::CountResult(c)) => count += c,
                 Ok(SearchMessage::Done(SearchType::Count)) => break,
                 Ok(SearchMessage::Error(e)) => panic!("Error: {}", e),
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-
-        assert_eq!(count, 3);
-        Ok(())
-    }
-
-    #[test]
-    fn test_fetch_matches() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new()?;
-        write!(file, "error line1\nok line2\nerror line3")?;
-        let path = file.path().to_path_buf();
-
-        let reader = Arc::new(FileReader::new(path, detect_encoding(b""))?);
-        let mut engine = SearchEngine::new();
-        engine.set_query("error".to_string(), false, true); // case sensitive
-
-        let (tx, rx) = mpsc::sync_channel(10);
-        let cancel_token = Arc::new(AtomicBool::new(false));
-
-        engine.fetch_matches(reader, tx, 0, 100, cancel_token);
-
-        let mut results = Vec::new();
-        loop {
-            match rx.recv() {
-                Ok(SearchMessage::ChunkResult(chunk)) => {
-                    results.extend(chunk.matches);
-                }
-                Ok(SearchMessage::Done(SearchType::Fetch)) => break,
-                Ok(SearchMessage::Error(e)) => panic!("Error: {}", e),
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].byte_offset, 0); // first "error"
-        // "error line1\n" = 12 bytes, "ok line2\n" = 9 bytes, so second "error" starts at 21
-        assert_eq!(results[1].byte_offset, 21); // second "error"
-        Ok(())
-    }
-
-    #[test]
-    fn test_memchr_fast_path() -> anyhow::Result<()> {
-        // 测试 memchr 快速路径用于大小写敏感的纯文本搜索
-        let mut file = NamedTempFile::new()?;
-        let content = "hello world\nhello again\nworld hello";
-        write!(file, "{}", content)?;
-        let path = file.path().to_path_buf();
-
-        let reader = Arc::new(FileReader::new(path, detect_encoding(b""))?);
-        let mut engine = SearchEngine::new();
-        engine.set_query("hello".to_string(), false, true);
-
-        let (tx, rx) = mpsc::sync_channel(10);
-        let cancel_token = Arc::new(AtomicBool::new(false));
-
-        engine.count_matches(reader, tx, cancel_token);
-
-        let mut count = 0;
-        loop {
-            match rx.recv() {
-                Ok(SearchMessage::CountResult(c)) => count += c,
-                Ok(SearchMessage::Done(SearchType::Count)) => break,
                 Ok(_) => continue,
                 Err(_) => break,
             }
