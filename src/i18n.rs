@@ -609,5 +609,79 @@ impl I18n {
             Language::Chinese => "搜索错误:",
         }
     }
+
+    // ===== 搜索结果面板 =====
+    pub fn panel_find_results(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Find Results",
+            Language::Chinese => "搜索结果",
+        }
+    }
+
+    pub fn panel_line(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Line",
+            Language::Chinese => "行",
+        }
+    }
+
+    pub fn panel_content(&self) -> &'static str {
+        match self.lang {
+            Language::English => "Content",
+            Language::Chinese => "内容",
+        }
+    }
+
+    pub fn panel_found_occurrences(&self, query: &str, count: usize) -> String {
+        match self.lang {
+            Language::English => format!("Found {} occurrences of '{}'.", count, query),
+            Language::Chinese => format!("找到 {} 处 '{}' 的匹配。", count, query),
+        }
+    }
+
+    pub fn panel_no_results(&self) -> &'static str {
+        match self.lang {
+            Language::English => "No search results. Press Cmd+F to search.",
+            Language::Chinese => "无搜索结果。按 Cmd+F 开始搜索。",
+        }
+    }
+
+    pub fn panel_collapse(&self) -> &'static str {
+        match self.lang {
+            Language::English => "▼",
+            Language::Chinese => "▼",
+        }
+    }
+
+    pub fn panel_expand(&self) -> &'static str {
+        match self.lang {
+            Language::English => "▶",
+            Language::Chinese => "▶",
+        }
+    }
+
+    pub fn shortcut_find(&self) -> &'static str {
+        if cfg!(target_os = "macos") {
+            "⌘F"
+        } else {
+            "Ctrl+F"
+        }
+    }
+
+    pub fn shortcut_replace(&self) -> &'static str {
+        if cfg!(target_os = "macos") {
+            "⌘R"
+        } else {
+            "Ctrl+R"
+        }
+    }
+
+    pub fn shortcut_save(&self) -> &'static str {
+        if cfg!(target_os = "macos") {
+            "⌘S"
+        } else {
+            "Ctrl+S"
+        }
+    }
 }
 

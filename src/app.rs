@@ -15,6 +15,15 @@ use large_text_core::search_engine::{SearchEngine, SearchMessage, SearchResult, 
 
 use crate::i18n::{I18n, Language};
 
+/// 搜索结果项，用于结果面板显示
+#[derive(Clone)]
+struct SearchResultItem {
+    line_number: usize,
+    byte_offset: usize,
+    match_len: usize,
+    line_content: String,
+}
+
 pub struct TextViewerApp {
     file_reader: Option<Arc<FileReader>>,
     line_indexer: LineIndexer,
@@ -36,10 +45,10 @@ pub struct TextViewerApp {
     use_regex: bool,
     case_sensitive: bool,
     search_results: Vec<SearchResult>,
-    current_result_index: usize, // Global index (0 to total_results - 1)
+    current_result_index: usize,
     total_search_results: usize,
-    search_page_start_index: usize, // Global index of the first result in search_results
-    page_offsets: Vec<usize>,       // Map of page_index -> start_byte_offset
+    search_page_start_index: usize,
+    page_offsets: Vec<usize>,
     search_error: Option<String>,
     search_in_progress: bool,
     search_find_all: bool,
@@ -47,6 +56,11 @@ pub struct TextViewerApp {
     search_cancellation_token: Option<Arc<AtomicBool>>,
     search_count_done: bool,
     search_fetch_done: bool,
+
+    // 搜索结果面板
+    show_results_panel: bool,
+    results_panel_items: Vec<SearchResultItem>,
+    results_panel_height: f32,
 
     // Replace UI
     replace_in_progress: bool,
@@ -75,7 +89,6 @@ pub struct TextViewerApp {
 
     // Programmatic scroll control
     scroll_to_row: Option<usize>,
-    // Correction for f32 scroll precision issues in large files
     scroll_correction: i64,
     pending_scroll_target: Option<usize>,
     last_scroll_offset: f32,
@@ -91,7 +104,7 @@ pub struct TextViewerApp {
     open_start_time: Option<std::time::Instant>,
     search_count_start_time: Option<std::time::Instant>,
 
-    // 国际化 / Internationalization
+    // 国际化
     i18n: I18n,
 }
 
@@ -132,6 +145,9 @@ impl Default for TextViewerApp {
             search_cancellation_token: None,
             search_count_done: false,
             search_fetch_done: false,
+            show_results_panel: true,
+            results_panel_items: Vec::new(),
+            results_panel_height: 200.0,
             replace_in_progress: false,
             replace_message_rx: None,
             replace_cancellation_token: None,
@@ -154,7 +170,7 @@ impl Default for TextViewerApp {
             pending_replacements: Vec::new(),
             open_start_time: None,
             search_count_start_time: None,
-            i18n: I18n::default(), // 默认中文
+            i18n: I18n::default(),
         }
     }
 }
@@ -168,16 +184,16 @@ impl TextViewerApp {
                 self.line_indexer
                     .index_file(self.file_reader.as_ref().unwrap());
                 self.scroll_line = 0;
-                self.scroll_to_row = Some(0); // Reset scroll to top for new file
+                self.scroll_to_row = Some(0);
                 self.status_message = self.i18n.msg_opened(&path.display().to_string());
                 self.search_engine.clear();
                 self.search_results.clear();
+                self.results_panel_items.clear();
                 self.total_search_results = 0;
                 self.search_page_start_index = 0;
                 self.page_offsets.clear();
                 self.current_result_index = 0;
 
-                // Setup file watcher if tail mode is enabled
                 if self.tail_mode {
                     self.setup_file_watcher();
                 }
@@ -211,14 +227,12 @@ impl TextViewerApp {
     fn check_file_changes(&mut self) {
         if let Some(ref rx) = self.file_change_rx {
             if rx.try_recv().is_ok() {
-                // File changed, reload
                 if let Some(ref reader) = self.file_reader {
                     let path = reader.path().clone();
                     let encoding = reader.encoding();
                     self.selected_encoding = encoding;
                     self.open_file(path);
 
-                    // Scroll to bottom in tail mode
                     if self.tail_mode {
                         let total_lines = self.line_indexer.total_lines();
                         let target_line = total_lines.saturating_sub(self.visible_lines);
@@ -233,6 +247,7 @@ impl TextViewerApp {
     fn perform_search(&mut self, find_all: bool) {
         self.search_error = None;
         self.search_results.clear();
+        self.results_panel_items.clear();
         self.current_result_index = 0;
         self.total_search_results = 0;
         self.search_page_start_index = 0;
@@ -261,8 +276,6 @@ impl TextViewerApp {
         );
 
         let reader = reader.clone();
-        // Use a bounded channel to provide backpressure to search threads
-        // This prevents memory explosion if the UI thread can't keep up with results
         let (tx, rx) = std::sync::mpsc::sync_channel(10_000);
 
         self.search_message_rx = Some(rx);
@@ -280,11 +293,11 @@ impl TextViewerApp {
             self.i18n.msg_searching_first().to_string()
         };
 
+        // 显示结果面板
+        self.show_results_panel = true;
+
         if find_all {
             self.search_count_start_time = Some(std::time::Instant::now());
-            // Start two tasks:
-            // 1. Count all matches (parallel)
-            // 2. Fetch first page of matches (sequential/chunked)
 
             let tx_count = tx.clone();
             let reader_count = reader.clone();
@@ -294,7 +307,6 @@ impl TextViewerApp {
             let cancel_token_count = cancel_token.clone();
 
             std::thread::spawn(move || {
-                // Task 1: Count
                 let mut engine = SearchEngine::new();
                 engine.set_query(query, use_regex, case_sensitive);
                 engine.count_matches(reader_count, tx_count, cancel_token_count);
@@ -306,13 +318,11 @@ impl TextViewerApp {
             let cancel_token_fetch = cancel_token.clone();
 
             std::thread::spawn(move || {
-                // Task 2: Fetch first page
                 let mut engine = SearchEngine::new();
                 engine.set_query(query_fetch, use_regex, case_sensitive);
                 engine.fetch_matches(reader_fetch, tx_fetch, 0, 1000, cancel_token_fetch);
             });
         } else {
-            // Find first match only
             let tx_fetch = tx.clone();
             let reader_fetch = reader.clone();
             let query = self.search_query.clone();
@@ -335,7 +345,6 @@ impl TextViewerApp {
 
         if let Some(ref rx) = self.search_message_rx {
             let mut new_results_added = false;
-            // Process all available messages
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     SearchMessage::CountResult(count) => {
@@ -346,7 +355,6 @@ impl TextViewerApp {
                         }
                     }
                     SearchMessage::ChunkResult(chunk_result) => {
-                        // Add results
                         self.search_results.extend(chunk_result.matches);
                         new_results_added = true;
                     }
@@ -382,32 +390,26 @@ impl TextViewerApp {
                         self.search_message_rx = None;
                         self.search_error = Some(e.clone());
                         self.status_message = self.i18n.msg_search_failed(&e);
-                        return; // Stop processing messages
+                        return;
                     }
                 }
             }
 
-            // Check if channel is disconnected
             if let Err(std::sync::mpsc::TryRecvError::Disconnected) = rx.try_recv() {
                 self.search_in_progress = false;
                 self.search_message_rx = None;
 
-                // Final sort to ensure everything is in order
                 self.search_results.sort_by_key(|r| r.byte_offset);
 
-                // If we are in "Find All" mode, total_results should be at least search_results.len()
-                // But count task might be slower or faster.
-                // If count task finished, total_results is correct.
-                // If fetch task finished, search_results is populated.
-
-                // If we are not finding all, total_results might be 0 (since we didn't run count task).
                 if !self.search_find_all {
                     self.total_search_results = self.search_results.len();
                 } else {
-                    // Ensure total is at least what we have
                     self.total_search_results =
                         self.total_search_results.max(self.search_results.len());
                 }
+
+                // 构建搜索结果面板项
+                self.build_results_panel_items();
 
                 let total = self.total_search_results;
                 if total > 0 {
@@ -417,7 +419,6 @@ impl TextViewerApp {
                         self.status_message = self.i18n.msg_first_match_hint().to_string();
                     }
 
-                    // Ensure we scroll to the first result if we haven't yet
                     if self.scroll_to_row.is_none() && !self.search_results.is_empty() {
                         let target_line = self
                             .line_indexer
@@ -431,11 +432,10 @@ impl TextViewerApp {
             }
 
             if new_results_added {
-                // Sort results by byte offset to keep them in order
-                // Only sort once per frame after processing all available chunks
                 self.search_results.sort_by_key(|r| r.byte_offset);
+                // 实时更新结果面板
+                self.build_results_panel_items();
 
-                // Check for scroll update after sort
                 if self.scroll_to_row.is_none()
                     && !self.search_results.is_empty()
                     && self.current_result_index == 0
@@ -446,6 +446,35 @@ impl TextViewerApp {
                     self.scroll_line = target_line;
                     self.scroll_to_row = Some(target_line);
                 }
+            }
+        }
+    }
+
+    /// 构建搜索结果面板的项目列表
+    fn build_results_panel_items(&mut self) {
+        self.results_panel_items.clear();
+        
+        let Some(ref reader) = self.file_reader else {
+            return;
+        };
+
+        // 限制显示数量，避免性能问题
+        let max_items = 1000.min(self.search_results.len());
+        
+        for result in self.search_results.iter().take(max_items) {
+            let line_number = self.line_indexer.find_line_at_offset(result.byte_offset);
+            
+            // 获取该行的内容
+            if let Some((start, end)) = self.line_indexer.get_line_with_reader(line_number, reader) {
+                let line_content = reader.get_chunk(start, end.min(start + 500)); // 限制长度
+                let line_content = line_content.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                
+                self.results_panel_items.push(SearchResultItem {
+                    line_number: line_number + 1, // 显示为1-based
+                    byte_offset: result.byte_offset,
+                    match_len: result.match_len,
+                    line_content,
+                });
             }
         }
     }
@@ -504,7 +533,6 @@ impl TextViewerApp {
 
         let match_info = self.search_results[local_index].clone();
 
-        // Queue the replacement
         self.pending_replacements.push(PendingReplacement {
             offset: match_info.byte_offset,
             old_len: match_info.match_len,
@@ -525,10 +553,7 @@ impl TextViewerApp {
             .set_file_name(input_path.file_name().unwrap().to_string_lossy())
             .save_file()
         {
-            // If saving to the same file
             if output_path == input_path {
-                // Apply pending replacements in-place if possible
-                // We need to close the reader first to release the lock
                 self.file_reader = None;
 
                 let mut success = true;
@@ -551,7 +576,6 @@ impl TextViewerApp {
                     self.status_message = self.i18n.msg_saved().to_string();
                 }
 
-                // Re-open file
                 match FileReader::new(input_path.clone(), encoding) {
                     Ok(reader) => {
                         self.file_reader = Some(Arc::new(reader));
@@ -564,8 +588,6 @@ impl TextViewerApp {
                     }
                 }
             } else {
-                // Saving to a different file
-                // Fallback: Copy file to output, then apply replacements in-place on the output file.
                 if std::fs::copy(&input_path, &output_path).is_ok() {
                     let mut success = true;
                     for replacement in &self.pending_replacements {
@@ -603,7 +625,6 @@ impl TextViewerApp {
         };
         let input_path = reader.path().clone();
 
-        // Ask for output file
         if let Some(output_path) = rfd::FileDialog::new()
             .set_file_name(format!(
                 "{}.modified",
@@ -644,12 +665,9 @@ impl TextViewerApp {
         }
 
         let next_index = (self.current_result_index + 1) % self.total_search_results;
-
-        // Check if next_index is within current page
         let page_end_index = self.search_page_start_index + self.search_results.len();
 
         if next_index >= self.search_page_start_index && next_index < page_end_index {
-            // In current page
             self.current_result_index = next_index;
             let local_index = next_index - self.search_page_start_index;
             let result = &self.search_results[local_index];
@@ -658,16 +676,10 @@ impl TextViewerApp {
             self.scroll_to_row = Some(target_line);
             self.pending_scroll_target = Some(target_line);
         } else {
-            // Need to fetch next page
-            // If we are wrapping around to 0
             if next_index == 0 {
                 self.fetch_page(0, 0);
             } else {
-                // Fetch next page starting from the end of current page
-                // We need the byte offset to start searching from.
-                // If we are just moving to the next page sequentially, we can use the last result's offset.
                 if let Some(last_result) = self.search_results.last() {
-                    // We should record the current page start offset before moving
                     if self.page_offsets.len() <= next_index / 1000 && self.page_offsets.is_empty()
                     {
                         self.page_offsets.push(0);
@@ -676,7 +688,6 @@ impl TextViewerApp {
                     let start_offset = last_result.byte_offset + 1;
                     self.fetch_page(next_index, start_offset);
                 } else {
-                    // Should not happen if total > 0
                     self.fetch_page(0, 0);
                 }
             }
@@ -695,11 +706,9 @@ impl TextViewerApp {
             self.current_result_index - 1
         };
 
-        // Check if prev_index is within current page
         let page_end_index = self.search_page_start_index + self.search_results.len();
 
         if prev_index >= self.search_page_start_index && prev_index < page_end_index {
-            // In current page
             self.current_result_index = prev_index;
             let local_index = prev_index - self.search_page_start_index;
             let result = &self.search_results[local_index];
@@ -708,13 +717,9 @@ impl TextViewerApp {
             self.scroll_to_row = Some(target_line);
             self.pending_scroll_target = Some(target_line);
         } else {
-            // Need to fetch previous page (or last page if wrapping)
             if prev_index == self.total_search_results - 1 {
                 self.status_message = self.i18n.msg_cannot_wrap().to_string();
             } else {
-                // Fetch previous page
-                // We need the start offset of the page containing `prev_index`.
-                // We assume pages are 1000 items.
                 let target_page_idx = prev_index / 1000;
                 let target_page_start_index = target_page_idx * 1000;
 
@@ -722,12 +727,25 @@ impl TextViewerApp {
                     self.fetch_page(target_page_start_index, offset);
                     self.current_result_index = prev_index;
                 } else {
-                    // Fallback: Search from 0
                     self.fetch_page(0, 0);
-                    self.current_result_index = 0; // Reset to 0 if lost
+                    self.current_result_index = 0;
                 }
             }
         }
+    }
+
+    /// 跳转到指定的搜索结果
+    fn go_to_result(&mut self, index: usize) {
+        if index >= self.search_results.len() {
+            return;
+        }
+        
+        self.current_result_index = self.search_page_start_index + index;
+        let result = &self.search_results[index];
+        let target_line = self.line_indexer.find_line_at_offset(result.byte_offset);
+        self.scroll_line = target_line;
+        self.scroll_to_row = Some(target_line);
+        self.pending_scroll_target = Some(target_line);
     }
 
     fn fetch_page(&mut self, start_index: usize, start_offset: usize) {
@@ -742,14 +760,12 @@ impl TextViewerApp {
         self.search_results.clear();
         self.search_page_start_index = start_index;
 
-        // Update page_offsets
         let page_idx = start_index / 1000;
         if page_idx >= self.page_offsets.len() {
             if page_idx == self.page_offsets.len() {
                 self.page_offsets.push(start_offset);
             }
         } else {
-            // Update existing?
             self.page_offsets[page_idx] = start_offset;
         }
 
@@ -776,8 +792,7 @@ impl TextViewerApp {
     fn go_to_line(&mut self) {
         if let Ok(line_num) = self.goto_line_input.parse::<usize>() {
             if line_num > 0 && line_num <= self.line_indexer.total_lines() {
-                let target_line = line_num - 1; // 0-indexed
-                                                // Show a few lines of context above the target line for better orientation
+                let target_line = line_num - 1;
                 self.scroll_line = target_line.saturating_sub(3);
                 self.scroll_to_row = Some(target_line);
                 self.pending_scroll_target = Some(target_line);
@@ -796,7 +811,6 @@ impl TextViewerApp {
                 ui.menu_button(self.i18n.menu_file(), |ui| {
                     if ui.button(self.i18n.menu_open()).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            // Auto-detect encoding
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = [0; 4096];
                                 if let Ok(n) = std::io::Read::read(&mut file, &mut buffer) {
@@ -808,8 +822,12 @@ impl TextViewerApp {
                         ui.close_menu();
                     }
 
+                    let save_text = format!("{} ({})", 
+                        if self.i18n.lang == Language::Chinese { "保存" } else { "Save" },
+                        self.i18n.shortcut_save()
+                    );
                     if ui
-                        .add_enabled(self.unsaved_changes, egui::Button::new(self.i18n.menu_save()))
+                        .add_enabled(self.unsaved_changes, egui::Button::new(save_text))
                         .clicked()
                     {
                         self.save_file();
@@ -830,6 +848,7 @@ impl TextViewerApp {
                     ui.checkbox(&mut self.wrap_mode, self.i18n.menu_word_wrap());
                     ui.checkbox(&mut self.show_line_numbers, self.i18n.menu_line_numbers());
                     ui.checkbox(&mut self.dark_mode, self.i18n.menu_dark_mode());
+                    ui.checkbox(&mut self.show_results_panel, self.i18n.panel_find_results());
 
                     ui.separator();
 
@@ -845,18 +864,15 @@ impl TextViewerApp {
                 });
 
                 ui.menu_button(self.i18n.menu_search(), |ui| {
-                    if ui
-                        .add(egui::Button::new(self.i18n.menu_find()).shortcut_text("Ctrl+F"))
-                        .clicked()
-                    {
+                    let find_text = format!("{} ({})", self.i18n.menu_find(), self.i18n.shortcut_find());
+                    if ui.button(find_text).clicked() {
                         self.show_search_bar = true;
                         self.focus_search_input = true;
                         ui.close_menu();
                     }
-                    if ui
-                        .add(egui::Button::new(self.i18n.menu_replace()).shortcut_text("Ctrl+R"))
-                        .clicked()
-                    {
+                    
+                    let replace_text = format!("{} ({})", self.i18n.menu_replace(), self.i18n.shortcut_replace());
+                    if ui.button(replace_text).clicked() {
                         self.show_search_bar = true;
                         self.show_replace = !self.show_replace;
                         ui.close_menu();
@@ -880,7 +896,6 @@ impl TextViewerApp {
                     }
                 });
 
-                // 语言切换菜单
                 ui.menu_button(self.i18n.menu_language(), |ui| {
                     for lang in Language::all() {
                         if ui
@@ -917,7 +932,7 @@ impl TextViewerApp {
                     .on_hover_text(self.i18n.toolbar_use_regex());
 
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.perform_search(false);
+                    self.perform_search(true); // 默认查找全部
                 }
 
                 if ui
@@ -962,7 +977,6 @@ impl TextViewerApp {
 
                 let total_results = self.total_search_results;
                 if total_results > 0 {
-                    // Show current position over total
                     let current = (self.current_result_index + 1).min(total_results);
                     ui.label(format!("{}/{}", current, total_results));
                 }
@@ -1064,6 +1078,171 @@ impl TextViewerApp {
         });
     }
 
+    /// 渲染搜索结果面板
+    fn render_results_panel(&mut self, ctx: &egui::Context) {
+        if !self.show_results_panel {
+            return;
+        }
+
+        egui::TopBottomPanel::bottom("results_panel")
+            .resizable(true)
+            .min_height(100.0)
+            .default_height(self.results_panel_height)
+            .show(ctx, |ui| {
+                // 面板标题栏
+                ui.horizontal(|ui| {
+                    // 折叠/展开按钮
+                    let collapse_btn = if self.results_panel_height > 30.0 { "▼" } else { "▶" };
+                    if ui.small_button(collapse_btn).clicked() {
+                        if self.results_panel_height > 30.0 {
+                            self.results_panel_height = 30.0;
+                        } else {
+                            self.results_panel_height = 200.0;
+                        }
+                    }
+                    
+                    ui.strong(self.i18n.panel_find_results());
+                    
+                    if !self.search_query.is_empty() && self.total_search_results > 0 {
+                        ui.label(self.i18n.panel_found_occurrences(&self.search_query, self.total_search_results));
+                    }
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").clicked() {
+                            self.show_results_panel = false;
+                        }
+                    });
+                });
+
+                ui.separator();
+
+                // 结果列表
+                if self.results_panel_items.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(self.i18n.panel_no_results());
+                    });
+                } else {
+                    // 表头
+                    ui.horizontal(|ui| {
+                        ui.add_sized([80.0, 20.0], egui::Label::new(
+                            egui::RichText::new(self.i18n.panel_line()).strong()
+                        ));
+                        ui.add_sized([ui.available_width(), 20.0], egui::Label::new(
+                            egui::RichText::new(self.i18n.panel_content()).strong()
+                        ));
+                    });
+                    
+                    ui.separator();
+
+                    // 滚动区域显示结果
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let mut clicked_index: Option<usize> = None;
+                            
+                            for (idx, item) in self.results_panel_items.iter().enumerate() {
+                                let is_selected = idx == self.current_result_index.saturating_sub(self.search_page_start_index);
+                                
+                                let response = ui.horizontal(|ui| {
+                                    // 行号
+                                    let line_text = format!("{} {}", self.i18n.panel_line(), item.line_number);
+                                    ui.add_sized([80.0, 18.0], egui::Label::new(
+                                        egui::RichText::new(line_text)
+                                            .monospace()
+                                            .color(egui::Color32::LIGHT_BLUE)
+                                    ));
+                                    
+                                    // 内容（高亮搜索词）
+                                    let content = &item.line_content;
+                                    let bg_color = if is_selected {
+                                        egui::Color32::from_rgb(60, 60, 100)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    };
+                                    
+                                    let frame = egui::Frame::none()
+                                        .fill(bg_color)
+                                        .inner_margin(2.0);
+                                    
+                                    frame.show(ui, |ui| {
+                                        // 简单高亮显示
+                                        self.render_highlighted_content(ui, content, &self.search_query);
+                                    });
+                                });
+                                
+                                if response.response.interact(egui::Sense::click()).clicked() {
+                                    clicked_index = Some(idx);
+                                }
+                            }
+                            
+                            // 处理点击事件
+                            if let Some(idx) = clicked_index {
+                                self.go_to_result(idx);
+                            }
+                        });
+                }
+            });
+    }
+
+    /// 渲染带高亮的内容
+    fn render_highlighted_content(&self, ui: &mut egui::Ui, content: &str, query: &str) {
+        if query.is_empty() || !content.to_lowercase().contains(&query.to_lowercase()) {
+            ui.label(egui::RichText::new(content).monospace().size(12.0));
+            return;
+        }
+
+        // 简单的高亮实现
+        let mut job = egui::text::LayoutJob::default();
+        let lower_content = content.to_lowercase();
+        let lower_query = query.to_lowercase();
+        
+        let mut last_end = 0;
+        for (start, _) in lower_content.match_indices(&lower_query) {
+            // 添加匹配前的文本
+            if start > last_end {
+                job.append(
+                    &content[last_end..start],
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::monospace(12.0),
+                        color: if self.dark_mode { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK },
+                        ..Default::default()
+                    },
+                );
+            }
+            
+            // 添加高亮的匹配文本
+            let end = start + query.len();
+            job.append(
+                &content[start..end.min(content.len())],
+                0.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::monospace(12.0),
+                    color: egui::Color32::BLACK,
+                    background: egui::Color32::YELLOW,
+                    ..Default::default()
+                },
+            );
+            
+            last_end = end;
+        }
+        
+        // 添加剩余文本
+        if last_end < content.len() {
+            job.append(
+                &content[last_end..],
+                0.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::monospace(12.0),
+                    color: if self.dark_mode { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK },
+                    ..Default::default()
+                },
+            );
+        }
+        
+        ui.label(job);
+    }
+
     fn render_text_area(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(ref reader) = self.file_reader {
@@ -1078,7 +1257,6 @@ impl TextViewerApp {
                 } else {
                     egui::ScrollArea::both()
                 }
-                // Tie scroll memory to the current file path so new files start at the top
                 .id_salt(
                     self.file_reader
                         .as_ref()
@@ -1089,7 +1267,6 @@ impl TextViewerApp {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .drag_to_scroll(true);
 
-                // Apply programmatic scroll if requested
                 let mut programmatic_scroll = false;
                 if let Some(target_row) = self.scroll_to_row.take() {
                     scroll_area =
@@ -1104,22 +1281,17 @@ impl TextViewerApp {
                     line_height,
                     self.line_indexer.total_lines(),
                     |ui, row_range| {
-                        // Calculate scroll correction if we just jumped
                         if let Some(target) = self.pending_scroll_target.take() {
                             self.scroll_correction = target as i64 - row_range.start as i64;
                         }
 
-                        // Apply correction to find the actual start line we want to render
                         let corrected_start_line =
                             (row_range.start as i64 + self.scroll_correction).max(0) as usize;
 
-                        // Capture the first visible row (corrected)
                         if first_visible_row.is_none() {
                             first_visible_row = Some(corrected_start_line);
                         }
 
-                        // For contiguous rendering, we find the start offset of the first line
-                        // and then read sequentially.
                         let mut current_offset = if let Some((start, _)) = self
                             .line_indexer
                             .get_line_with_reader(corrected_start_line, reader)
@@ -1129,18 +1301,14 @@ impl TextViewerApp {
                             return;
                         };
 
-                        // We iterate over the count of rows requested, but starting from our corrected line
                         let count = row_range.end - row_range.start;
                         let render_range = corrected_start_line..(corrected_start_line + count);
 
                         for line_num in render_range {
-                            // Read line starting at current_offset
-                            // We need to find the end of the line
-                            let chunk_size = 4096; // Read in chunks to find newline
+                            let chunk_size = 4096;
                             let mut line_end = current_offset;
                             let mut found_newline = false;
 
-                            // Scan for newline
                             while !found_newline {
                                 let chunk = reader.get_bytes(line_end, line_end + chunk_size);
                                 if chunk.is_empty() {
@@ -1148,7 +1316,7 @@ impl TextViewerApp {
                                 }
 
                                 if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
-                                    line_end += pos + 1; // Include newline
+                                    line_end += pos + 1;
                                     found_newline = true;
                                 } else {
                                     line_end += chunk.len();
@@ -1161,7 +1329,7 @@ impl TextViewerApp {
 
                             let start = current_offset;
                             let end = line_end;
-                            current_offset = end; // Next line starts here
+                            current_offset = end;
 
                             if start >= reader.len() {
                                 break;
@@ -1169,7 +1337,6 @@ impl TextViewerApp {
 
                             let mut line_text_owned = reader.get_chunk(start, end);
 
-                            // Apply pending replacements to the view
                             for replacement in &self.pending_replacements {
                                 let rep_start = replacement.offset;
                                 let rep_end = rep_start + replacement.old_len;
@@ -1193,10 +1360,8 @@ impl TextViewerApp {
                                 .trim_end_matches('\n')
                                 .trim_end_matches('\r');
 
-                            // Collect matches that fall within this line's byte span; this works even with sparse line indexing
                             let mut line_matches: Vec<(usize, usize, bool)> = Vec::new();
 
-                            // Determine the byte offset of the currently selected result
                             let selected_offset = if self.total_search_results > 0
                                 && self.current_result_index >= self.search_page_start_index
                             {
@@ -1208,16 +1373,12 @@ impl TextViewerApp {
                             };
 
                             if self.search_find_all {
-                                // Use find_in_text to find matches in the current line (highlight all visible)
                                 for (m_start, m_end) in self.search_engine.find_in_text(line_text) {
                                     let abs_start = start + m_start;
                                     let is_selected = Some(abs_start) == selected_offset;
                                     line_matches.push((m_start, m_end, is_selected));
                                 }
                             } else {
-                                // Only highlight results present in search_results (e.g. single find)
-                                // Use binary search to find the first potential match
-                                // This assumes search_results is sorted by byte_offset
                                 let start_idx = self
                                     .search_results
                                     .partition_point(|r| r.byte_offset < start);
@@ -1235,8 +1396,6 @@ impl TextViewerApp {
                                     }
                                     let rel_end = (rel_start + res.match_len).min(line_text.len());
 
-                                    // Check if this is the currently selected result
-                                    // We need to map local index to global index
                                     let global_idx = self.search_page_start_index + idx;
                                     let is_selected = global_idx == self.current_result_index;
 
@@ -1250,13 +1409,10 @@ impl TextViewerApp {
                                         egui::RichText::new(format!("{:6} ", line_num + 1))
                                             .monospace()
                                             .color(egui::Color32::DARK_GRAY);
-                                    // Make line numbers non-selectable so drag-select only captures the content text
                                     ui.add(egui::Label::new(ln_text).selectable(false));
                                 }
 
-                                // Build label with highlighted search matches
                                 let label = if !line_matches.is_empty() {
-                                    // Create a LayoutJob to highlight matches within the line using their byte offsets
                                     let mut job = egui::text::LayoutJob::default();
                                     let mut last_end = 0;
 
@@ -1288,7 +1444,6 @@ impl TextViewerApp {
                                                 color: egui::Color32::BLACK,
                                                 background: if *is_selected {
                                                     egui::Color32::from_rgb(255, 200, 0)
-                                                // orange-ish for current match
                                                 } else {
                                                     egui::Color32::YELLOW
                                                 },
@@ -1299,7 +1454,6 @@ impl TextViewerApp {
                                         last_end = match_end;
                                     }
 
-                                    // Add remaining text after last match
                                     if last_end < line_text.len() {
                                         job.append(
                                             &line_text[last_end..],
@@ -1329,7 +1483,6 @@ impl TextViewerApp {
                                         .monospace()
                                         .size(self.font_size);
 
-                                    // Apply wrap mode
                                     if self.wrap_mode {
                                         ui.add(egui::Label::new(text).wrap())
                                     } else {
@@ -1337,28 +1490,22 @@ impl TextViewerApp {
                                     }
                                 };
 
-                                // Enable text selection for copy-paste
                                 if label.hovered() {
                                     ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
                                 }
 
-                                // Ensure labels don't consume scroll events
                                 label.surrender_focus();
                             });
                         }
                     },
                 );
 
-                // Check for manual scroll
                 let current_offset = output.state.offset.y;
                 if !programmatic_scroll && (current_offset - self.last_scroll_offset).abs() > 1.0 {
-                    // Manual scroll detected (drag or wheel)
-                    // Reset correction as user is establishing new position
                     self.scroll_correction = 0;
                 }
                 self.last_scroll_offset = current_offset;
 
-                // Update scroll_line to match what was actually displayed
                 if let Some(first_row) = first_visible_row {
                     self.scroll_line = first_row;
                 }
@@ -1384,7 +1531,6 @@ impl TextViewerApp {
                         {
                             self.selected_encoding = encoding;
 
-                            // Reload file with new encoding
                             if let Some(ref reader) = self.file_reader {
                                 let path = reader.path().clone();
                                 self.open_file(path);
@@ -1453,7 +1599,6 @@ impl eframe::App for TextViewerApp {
             self.open_start_time = None;
         }
 
-        // Update window title
         let title = if self.unsaved_changes {
             self.i18n.window_title_unsaved()
         } else {
@@ -1461,44 +1606,79 @@ impl eframe::App for TextViewerApp {
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_string()));
 
-        // Handle keyboard shortcuts
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::S)) {
+        // 快捷键处理 - 支持 Cmd (macOS) 和 Ctrl (Windows/Linux)
+        let modifiers = if cfg!(target_os = "macos") {
+            egui::Modifiers::MAC_CMD
+        } else {
+            egui::Modifiers::CTRL
+        };
+
+        // Cmd/Ctrl + S: 保存
+        if ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::S)) {
             self.save_file();
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::R)) {
+        
+        // Cmd/Ctrl + R: 替换
+        if ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::R)) {
             self.show_search_bar = true;
             self.show_replace = !self.show_replace;
+            self.focus_search_input = true;
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+        
+        // Cmd/Ctrl + F: 查找
+        if ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::F)) {
             self.show_search_bar = !self.show_search_bar;
             if self.show_search_bar {
                 self.focus_search_input = true;
+                self.show_results_panel = true;
             }
         }
 
-        // Set theme
+        // Cmd/Ctrl + G: 跳转到行
+        if ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::G)) {
+            self.show_search_bar = true;
+            self.focus_search_input = false;
+        }
+
+        // Escape: 关闭搜索栏
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.show_search_bar = false;
+        }
+
+        // F3 或 Cmd/Ctrl + Enter: 下一个结果
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F3)) 
+            || ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::Enter)) 
+        {
+            self.go_to_next_result();
+        }
+
+        // Shift + F3: 上一个结果
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F3)) {
+            self.go_to_previous_result();
+        }
+
         if self.dark_mode {
             ctx.set_visuals(egui::Visuals::dark());
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
 
-        // Check for file changes in tail mode
         if self.tail_mode {
             self.check_file_changes();
-            ctx.request_repaint(); // Keep refreshing
+            ctx.request_repaint();
         }
 
         self.poll_search_results();
         self.poll_replace_results();
 
         if self.search_in_progress || self.replace_in_progress {
-            ctx.request_repaint(); // Keep spinner animated during long searches
+            ctx.request_repaint();
         }
 
         self.render_menu_bar(ctx);
         self.render_toolbar(ctx);
         self.render_status_bar(ctx);
+        self.render_results_panel(ctx);
         self.render_text_area(ctx);
         self.render_encoding_selector(ctx);
         self.render_file_info(ctx);
