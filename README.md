@@ -87,14 +87,41 @@
 
 ```rust
 pub trait Plugin: Send {
+    /// 返回插件元信息
     fn info(&self) -> &PluginInfo;
+    
+    /// 检测是否可以处理此文件内容（根据文件头部采样判断）
     fn can_handle(&self, content_sample: &str) -> bool;
+    
+    /// 插件激活时调用（文件加载时）
     fn on_activate(&mut self, content_sample: &str);
+    
+    /// 插件停用时调用
+    fn on_deactivate(&mut self);
+    
+    /// 渲染侧边面板（过滤器、统计等）
     fn render_side_panel(&mut self, ui: &mut egui::Ui, ctx: &PluginContext);
+    
+    /// 渲染单行内容（语法高亮）
     fn render_line(&mut self, ui: &mut egui::Ui, line: &str, ctx: &PluginContext);
-    // ...
 }
 ```
+
+**开发步骤：**
+
+1. 在 `src/plugins/` 目录下创建新的 `.rs` 文件
+2. 实现 `Plugin` trait 的所有必需方法
+3. 在 `src/main.rs` 中通过 `PluginManager::register()` 注册插件
+4. 插件会在文件加载时自动检测并激活
+
+**示例：** 参考 `src/trace_plugin.rs` 的实现
+
+> **关于 Python 脚本插件支持：** 当前版本暂不支持 Python 脚本开发插件。如需此功能，可通过集成 [PyO3](https://github.com/PyO3/pyo3) crate 实现 Python 嵌入。这需要：
+> - 添加 `pyo3` 依赖到 `Cargo.toml`
+> - 创建 Python 插件适配器类
+> - 定义 Python 接口 (可使用 `#[pyclass]` 和 `#[pymethods]`)
+> 
+> 实现复杂度：中等（约 500-1000 行代码）
 
 ## 性能目标
 

@@ -467,7 +467,7 @@ impl Plugin for TraceAnalyzerPlugin {
             ui.add_space(8.0);
             
             // 过滤器区块
-            render_filter_section(
+            let filter_changed = render_filter_section(
                 ui, 
                 &mut self.filter,
                 &self.theme,
@@ -479,6 +479,11 @@ impl Plugin for TraceAnalyzerPlugin {
                 &mut self.seq_start_input,
                 &mut self.seq_end_input,
             );
+            
+            // 当过滤设置变化时应用设置
+            if filter_changed {
+                self.apply_filter_settings();
+            }
             
             ui.add_space(12.0);
             
@@ -719,7 +724,9 @@ fn render_filter_section(
     register_input: &mut String,
     seq_start_input: &mut String,
     seq_end_input: &mut String,
-) {
+) -> bool {
+    let mut settings_changed = false;
+    
     // 标题栏
     let header = ui.horizontal(|ui| {
         ui.add_space(4.0);
@@ -736,7 +743,7 @@ fn render_filter_section(
     }
     
     if !*expanded {
-        return;
+        return false;
     }
     
     ui.add_space(4.0);
@@ -778,6 +785,7 @@ fn render_filter_section(
                     
                     if ui.add(btn).clicked() {
                         filter.enabled_types.insert(*inst_type, !enabled);
+                        settings_changed = true;
                     }
                 }
             });
@@ -792,7 +800,9 @@ fn render_filter_section(
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut filter.depth_filter_enabled, "");
+                if ui.checkbox(&mut filter.depth_filter_enabled, "").changed() {
+                    settings_changed = true;
+                }
                 ui.label(egui::RichText::new(
                     if lang == Language::Chinese { "🏷️ 深度" } else { "🏷️ Depth" }
                 ).size(11.0).color(panel_theme.text_muted));
@@ -801,12 +811,17 @@ fn render_filter_section(
             if filter.depth_filter_enabled {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("[D").color(trace_theme.depth).monospace().size(11.0));
-                    ui.add(
+                    let response = ui.add(
                         egui::TextEdit::singleline(depth_input)
                             .desired_width(35.0)
                             .font(egui::FontId::monospace(11.0))
                     );
                     ui.label(egui::RichText::new("]").color(trace_theme.depth).monospace().size(11.0));
+                    
+                    // 当输入变化或按回车时应用设置
+                    if response.changed() || response.lost_focus() {
+                        settings_changed = true;
+                    }
                 });
             }
         });
@@ -820,7 +835,9 @@ fn render_filter_section(
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut filter.register_filter_enabled, "");
+                if ui.checkbox(&mut filter.register_filter_enabled, "").changed() {
+                    settings_changed = true;
+                }
                 ui.label(egui::RichText::new(
                     if lang == Language::Chinese { "📝 寄存器" } else { "📝 Register" }
                 ).size(11.0).color(panel_theme.text_muted));
@@ -835,17 +852,22 @@ fn render_filter_section(
                         ).fill(panel_theme.hover_bg).rounding(3.0)).clicked() {
                             *register_input = reg.to_string();
                             filter.register_filter = Some(reg.to_string());
+                            settings_changed = true;
                         }
                     }
                 });
                 
                 ui.add_space(2.0);
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(register_input)
                         .hint_text("X0, X1...")
                         .desired_width(ui.available_width() - 4.0)
                         .font(egui::FontId::monospace(11.0))
                 );
+                
+                if response.changed() || response.lost_focus() {
+                    settings_changed = true;
+                }
             }
         });
     
@@ -858,7 +880,9 @@ fn render_filter_section(
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut filter.seq_filter_enabled, "");
+                if ui.checkbox(&mut filter.seq_filter_enabled, "").changed() {
+                    settings_changed = true;
+                }
                 ui.label(egui::RichText::new(
                     if lang == Language::Chinese { "🔢 序号范围" } else { "🔢 Seq Range" }
                 ).size(11.0).color(panel_theme.text_muted));
@@ -867,19 +891,23 @@ fn render_filter_section(
             if filter.seq_filter_enabled {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("#").color(trace_theme.seq_number).monospace().size(11.0));
-                    ui.add(
+                    let r1 = ui.add(
                         egui::TextEdit::singleline(seq_start_input)
                             .hint_text("start")
                             .desired_width(50.0)
                             .font(egui::FontId::monospace(10.0))
                     );
                     ui.label(egui::RichText::new("-").size(11.0));
-                    ui.add(
+                    let r2 = ui.add(
                         egui::TextEdit::singleline(seq_end_input)
                             .hint_text("end")
                             .desired_width(50.0)
                             .font(egui::FontId::monospace(10.0))
                     );
+                    
+                    if r1.changed() || r1.lost_focus() || r2.changed() || r2.lost_focus() {
+                        settings_changed = true;
+                    }
                 });
             }
         });
@@ -898,20 +926,26 @@ fn render_filter_section(
             
             ui.add_space(2.0);
             
-            ui.checkbox(
+            if ui.checkbox(
                 &mut filter.show_memory_only,
                 egui::RichText::new(
                     if lang == Language::Chinese { "仅内存操作" } else { "Memory only" }
                 ).size(11.0)
-            );
+            ).changed() {
+                settings_changed = true;
+            }
             
-            ui.checkbox(
+            if ui.checkbox(
                 &mut filter.show_reg_changes_only,
                 egui::RichText::new(
                     if lang == Language::Chinese { "仅寄存器变化" } else { "Reg changes only" }
                 ).size(11.0)
-            );
+            ).changed() {
+                settings_changed = true;
+            }
         });
+    
+    settings_changed
 }
 
 // ========== 高亮辅助函数 ==========
